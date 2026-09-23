@@ -1,0 +1,39 @@
+# Scaling test: adds node-4 and gives EVERY node the 4-node peer list.
+# No Go code changes are involved -- only this service and a config entry.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.node4.yml up --build
+services:
+  node-4:
+    build:
+      context: .
+      dockerfile: node/Dockerfile
+    image: p2p-sim-node:latest
+    container_name: node-4
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m
+    pids_limit: 128
+    mem_limit: 768m
+    volumes:
+      - ./config:/app/config:ro
+    ports:
+      - "${NODE_BIND:-127.0.0.1}:${NODE_4_PORT:-8084}:8000"
+    environment:
+      PEERS_CONFIG: /app/config/peers.4.yaml
+      NODE_CONFIG: /app/config/node.yaml
+      NODE_ID: node-4
+
+  # Membership is symmetric: existing nodes must learn about node-4 too.
+  node-1:
+    environment:
+      PEERS_CONFIG: /app/config/peers.4.yaml
+  node-2:
+    environment:
+      PEERS_CONFIG: /app/config/peers.4.yaml
+  node-3:
+    environment:
+      PEERS_CONFIG: /app/config/peers.4.yaml

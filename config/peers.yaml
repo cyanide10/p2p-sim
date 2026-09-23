@@ -1,0 +1,11 @@
+# Static peer list, shared by EVERY node. No discovery: each node reads this
+# once at startup and finds itself by NODE_ID. Any node can coordinate a batch
+# and dispatches to all entries, itself included.
+# Hostnames must match docker-compose service names so Docker DNS resolves them.
+peers:
+  - id: node-1
+    url: http://node-1:8000
+  - id: node-2
+    url: http://node-2:8000
+  - id: node-3
+    url: http://node-3:8000

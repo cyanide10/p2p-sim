@@ -1,0 +1,42 @@
+# Settings shared by every node. Per-node identity is NODE_ID (environment),
+# and the member list is peers.yaml. Environment variables of the same name
+# in upper case (e.g. REQUEST_TIMEOUT) override these values.
+
+listen_addr: ":8000"
+
+# --- Coordinating a batch (the node that received POST /run) ---
+
+# Per node->node POST /task. Must exceed sim_timeout so the executing node fails first.
+request_timeout: 30s
+health_timeout: 2s
+
+# Total tries per task (first attempt + retries) before it is marked failed.
+# A node answering "busy" (503) does not use up an attempt.
+max_attempts: 3
+
+# After a failure a node pauses, then must pass GET /health before taking work.
+backoff_initial: 500ms
+backoff_max: 10s
+
+# Upper bound on one dispatch phase (distributed run or serial baseline).
+phase_timeout: 1h
+
+# --- Executing tasks (every node) ---
+
+sim_timeout: 25s
+# Simulations this node runs at once, shared by its own batch and tasks
+# sent by other nodes. Extra requests get 503 and are placed elsewhere.
+max_concurrent_tasks: 2
+python_bin: python3
+sim_script: /app/sim/simulate.py
+
+# --- Applied to any field omitted from a POST /run body ---
+defaults:
+  replications: 100
+  lambda: 0.8
+  mu: 1.0
+  sim_time: 10000
+  warmup_time: 1000
+  tolerance_pct: 10
+  # Re-run the same seeds serially on the coordinating node to report a speedup figure.
+  serial_baseline: true

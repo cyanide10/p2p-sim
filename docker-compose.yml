@@ -1,0 +1,61 @@
+name: p2p-sim
+
+# Container hardening shared by every service: no Linux capabilities, no
+# privilege escalation, immutable root filesystem, bounded process count.
+x-hardening: &hardening
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=16m
+  pids_limit: 128
+
+# Every node runs the same image and reads the same peer list. Any node can
+# accept POST /run and coordinate that batch; every node executes tasks.
+x-node: &node
+  <<: *hardening
+  build:
+    context: .
+    dockerfile: node/Dockerfile
+  image: p2p-sim-node:latest
+  mem_limit: 768m
+  volumes:
+    - ./config:/app/config:ro
+  environment: &node-env
+    PEERS_CONFIG: /app/config/peers.yaml
+    NODE_CONFIG: /app/config/node.yaml
+
+services:
+  # The API is unauthenticated, so host ports are published on loopback only
+  # by default. Set NODE_BIND=0.0.0.0 only on a trusted network.
+  node-1:
+    <<: *node
+    container_name: node-1
+    ports:
+      - "${NODE_BIND:-127.0.0.1}:${NODE_1_PORT:-8081}:8000"
+    environment:
+      <<: *node-env
+      NODE_ID: node-1
+
+  node-2:
+    <<: *node
+    container_name: node-2
+    ports:
+      - "${NODE_BIND:-127.0.0.1}:${NODE_2_PORT:-8082}:8000"
+    environment:
+      <<: *node-env
+      NODE_ID: node-2
+
+  node-3:
+    <<: *node
+    container_name: node-3
+    ports:
+      - "${NODE_BIND:-127.0.0.1}:${NODE_3_PORT:-8083}:8000"
+    environment:
+      <<: *node-env
+      NODE_ID: node-3
+
+  # A 4th node is added without code changes via docker-compose.node4.yml:
+  #   docker compose -f docker-compose.yml -f docker-compose.node4.yml up --build
