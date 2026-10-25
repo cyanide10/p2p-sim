@@ -119,7 +119,7 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
           <strong>Serial baseline does not match the distributed results.</strong> The same seeds produced different numbers on one node, so the replications are not reproducible. The speedup figure cannot be trusted.
         </div>
       )}
-      {smallSample && <div className="notice notice-warning" role="status"><TriangleAlert size={14} /> Fewer than {SMALL_SAMPLE} replications completed. The t-based confidence intervals are wide and the verdict is weak evidence.</div>}
+      {smallSample && <div className="notice notice-warning" role="status"><TriangleAlert size={14} /> Fewer than {SMALL_SAMPLE} replications completed. The normal-approximation confidence intervals are unreliable at this size, so treat the verdict as weak evidence.</div>}
 
       <div className="verdict-panel">
         <Verdict verdict={report.verdict} />
