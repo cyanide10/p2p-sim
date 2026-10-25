@@ -22,40 +22,46 @@ This checklist turns the review of [`gui-stage1-2-plan.md`](../gui-stage1-2-plan
 ## Phase 1: Native Frontend
 
 - [x] Scaffold `web/` with Vite, strict TypeScript, hash routing, theme support, API types/client, mock client, and dev-only scenario selection.
-- [ ] Add shared pure helpers for validation, formatting, and M/M/1 statistics; test them with Vitest.
+- [x] Add shared pure helpers for validation, formatting, and M/M/1 statistics; test them with Vitest.
 - [x] Implement Cluster: arbitrary node count, health and latency, observer identity, who-sees-whom matrix, disagreement indication, refresh/loading/error states.
 - [x] Implement Launch: config defaults, healthy coordinator selection, validation and warnings, random seed, 409 alternate-node action, and accepted-run navigation.
-- [ ] Implement Live batch: status polling/backoff, progress, terminal states, coordinator-loss resubmission, and task-grid placeholder when real task details are absent.
-- [ ] Implement Report: real report fields, metric confidence intervals and theory comparisons, verdict, timing, serial-match status, stale state, small-sample warning, and copy-as-JSON.
+- [x] Implement Live batch: status polling/backoff, progress, terminal states, coordinator-loss resubmission, and task-grid placeholder when real task details are absent.
+- [x] Implement Report: real report fields, metric confidence intervals and theory comparisons, verdict, timing, serial-match status, stale state, small-sample warning, and copy-as-JSON.
 - [ ] Implement History: pagination, empty/error/loading states, correct Live/Report navigation, and rerun with the same parameters.
-- [ ] Exercise all mock scenarios, including worker failure/retry, coordinator loss, busy, validation failure, small sample size, serial mismatch, and a fourth node.
+- [x] Exercise all mock scenarios, including worker failure/retry, coordinator loss, busy, validation failure, small sample size, serial mismatch, and a fourth node.
 - [ ] Verify keyboard navigation, visible focus, semantic controls, and responsive layout down to 360px.
 
 **Gate:** `npm run typecheck`, `npm test`, and `npm run build` pass in `web/`; all screens and mock scenarios are navigable without a gateway or nodes.
 
+Status (2026-10-04): Live and Report screens done (milestone M1.3). The mock is a time-driven simulation in `web/src/api/mock/mockRuns.ts`; results depend only on the seed, so a resubmitted batch reproduces the original statistics. All eight scenarios were driven end to end in headless Chromium at 1280px and 375px, in light and dark themes. History and a formal keyboard/accessibility pass remain (M1.4).
+
+Docker: `web/Dockerfile` builds the bundle and serves it from unprivileged nginx with the same hardening as the nodes; `docker-compose.web.yml` runs it on `127.0.0.1:8090`. It uses the mock API until the gateway exists. This is separate from the Phase 4 gateway Compose work below, and the node-only `docker-compose.yml` is unchanged.
+
 ## Phase 2: Native Go Gateway
 
-- [ ] Create the independent `gateway/` Go module and implement settings plus a validated peers-file reader.
-- [ ] Implement node HTTP clients with request timeouts, redirect refusal, response-size limits, and distinguishable downstream errors.
-- [ ] Add fake-node helpers using `httptest` so gateway tests need no running nodes.
-- [ ] Implement cluster aggregation, config endpoint, and liveness endpoint; test node failures, matrix disagreement, and four-node membership.
-- [ ] Implement SQLite persistence, migrations, retention/pruning, and run history.
-- [ ] Implement run submission and one bounded tracker per run; test completion, coordinator loss, 409 passthrough, restart recovery, and cancellation.
-- [ ] Implement status/report proxying and stale snapshot fallback; cover all routes and unknown-run behavior.
-- [ ] Add middleware for strict JSON, request-size limits, optional bearer auth, security headers, logging, recovery, and graceful shutdown.
-- [ ] Specify and implement the frontend build-copy step into a directory inside `gateway/` before embedding; retain a committed placeholder so Go builds before the web bundle exists.
-- [ ] Keep gateway peers hot reload distinct from node membership. A gateway config change alone must not be presented as changing the nodes' dispatch membership.
-- [ ] Run `go vet ./...` and `go test ./...` in `gateway/`; attempt `go test -race ./...` only if the native toolchain supports it and record the result.
+- [x] Create the independent `gateway/` Go module and implement settings plus a validated peers-file reader.
+- [x] Implement node HTTP clients with request timeouts, redirect refusal, response-size limits, and distinguishable downstream errors.
+- [x] Add fake-node helpers using `httptest` so gateway tests need no running nodes.
+- [x] Implement cluster aggregation, config endpoint, and liveness endpoint; test node failures, matrix disagreement, and four-node membership.
+- [x] Implement SQLite persistence, migrations, retention/pruning, and run history.
+- [x] Implement run submission and one bounded tracker per run; test completion, coordinator loss, 409 passthrough, restart recovery, and cancellation.
+- [x] Implement status/report proxying and stale snapshot fallback; cover all routes and unknown-run behavior.
+- [x] Add middleware for strict JSON, request-size limits, optional bearer auth, security headers, logging, recovery, and graceful shutdown.
+- [x] Specify and implement the frontend build-copy step into a directory inside `gateway/` before embedding; retain a committed placeholder so Go builds before the web bundle exists.
+- [x] Keep gateway peers hot reload distinct from node membership. A gateway config change alone must not be presented as changing the nodes' dispatch membership.
+- [x] Run `go vet ./...` and `go test ./...` in `gateway/`; attempt `go test -race ./...` only if the native toolchain supports it and record the result.
 
 **Gate:** Native gateway tests pass without Docker, running nodes, or Python. The frontend works against fake nodes with mock mode disabled.
+
+Status (2026-10-04): done. `go vet`, `go test` and `go test -race` pass on Linux. The gateway was also run against real nodes in Docker (see Phase 4 note): cluster view, launch, live progress, report, history persistence across a gateway restart, and coordinator loss with resubmission were all checked in the browser.
 
 ## Phase 3: Native Integration and Documentation
 
 - [ ] Create/document a native peers config using URLs reachable from Windows; do not use Compose-only DNS names such as `node-1` from the native gateway.
 - [ ] Document PowerShell commands to build and run the web app and gateway, and to point the gateway at the native peers/config/database paths.
 - [ ] Verify one complete flow against fake nodes: cluster view, launch, live status, report, history, and stale fallback.
-- [ ] Verify no files under `node/` or `sim/` changed.
-- [ ] Complete `docs/assumptions.md` and record dependencies, native test results, and any unavailable race test.
+- [x] Verify no files under `node/` or `sim/` changed.
+- [x] Complete `docs/assumptions.md` and record dependencies, native test results, and any unavailable race test.
 
 **Gate:** The native definition of done in `gui-stage1-2-plan.md` is met and the documented workflow does not require Docker or WSL.
 
@@ -70,3 +76,5 @@ This checklist turns the review of [`gui-stage1-2-plan.md`](../gui-stage1-2-plan
 - [ ] Add a fourth node and confirm it is both visible in the UI and included in node dispatch after all nodes adopt the four-node peer list.
 
 **Gate:** Compose/WSL integration works independently of the native test suite, and adding a node requires configuration changes only, not UI or gateway code changes.
+
+Status (2026-10-04, done early on Linux at the owner's request): the gateway runs in Compose via `docker-compose.web.yml`. It reaches nodes by service name through the shared `config/peers.yaml`, stores history in the `gateway-data` volume, and is published on `127.0.0.1:8090`. The node-only `docker-compose.yml` is unchanged. Not yet checked: the four-node file together with `GATEWAY_PEERS=peers.4.yaml`, and Windows/WSL.

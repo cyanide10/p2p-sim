@@ -1,201 +1,236 @@
-import { CircleCheck, CircleX, Copy, Hourglass, TriangleAlert } from "lucide-react";
+import { Activity, Check, CircleCheck, CircleX, Copy, History, RotateCcw, TriangleAlert, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, createApiClient } from "../api/client";
-import type { MetricComparison, MockScenario, NodeReport } from "../api/types";
-import { ciScale, formatNumber, formatSeconds } from "../lib/report";
+import type { MetricComparison, MockScenario, NetworkReport, NodeReport, RunRecord } from "../api/types";
+import { NetworkReportView } from "./NetworkReport";
 
-const PENDING_POLL_MS = 2000;
+function isNetworkReport(report: NodeReport | NetworkReport): report is NetworkReport {
+  return (report as NetworkReport).kind === "network";
+}
+import { chartDomain } from "../lib/chart";
+import { formatDuration, formatNumber, formatPercent, formatSpeedup } from "../lib/format";
+
 const SMALL_SAMPLE = 30;
 
-const METRICS: Array<{ key: "mean_wait_time" | "mean_queue_length" | "utilization"; label: string; symbol: string }> = [
-  { key: "mean_wait_time", label: "Mean time in system", symbol: "W" },
-  { key: "mean_queue_length", label: "Mean number in system", symbol: "L" },
-  { key: "utilization", label: "Server utilization", symbol: "ρ" },
-];
-
-function CiBar({ metric }: { metric: MetricComparison }) {
-  const s = ciScale(metric);
+function MetricChart({ metric, label }: { metric: MetricComparison; label: string }) {
+  const [low, high] = chartDomain(metric);
+  const width = 320;
+  const x = (value: number) => 10 + ((value - low) / (high - low)) * (width - 20);
+  const band = Math.abs(metric.theoretical) * (metric.tolerance_pct / 100);
+  const summary = `${label}: mean ${formatNumber(metric.mean)}, 95% CI ${formatNumber(metric.ci95_low)} to ${formatNumber(metric.ci95_high)}, theoretical ${formatNumber(metric.theoretical)} ${metric.theoretical_in_ci ? "inside" : "outside"} the interval.`;
   return (
-    <div className="ci-bar" aria-hidden="true">
-      <span className="ci-range" style={{ left: `${s.low}%`, width: `${s.high - s.low}%` }} />
-      <span className="ci-mean" style={{ left: `${s.mean}%` }} />
-      <span className={`ci-theory ${metric.theoretical_in_ci ? "" : "outside"}`} style={{ left: `${s.theory}%` }} />
-    </div>
+    <svg className="metric-chart" viewBox={`0 0 ${width} 58`} role="img" aria-label={summary}>
+      <rect className="chart-band" x={x(metric.theoretical - band)} y={6} width={Math.max(1, x(metric.theoretical + band) - x(metric.theoretical - band))} height={30} rx={2} />
+      <line className="chart-axis" x1={10} x2={width - 10} y1={21} y2={21} />
+      <line className="chart-theory" x1={x(metric.theoretical)} x2={x(metric.theoretical)} y1={3} y2={39} />
+      <line className="chart-ci" x1={x(metric.ci95_low)} x2={x(metric.ci95_high)} y1={21} y2={21} />
+      <line className="chart-ci" x1={x(metric.ci95_low)} x2={x(metric.ci95_low)} y1={14} y2={28} />
+      <line className="chart-ci" x1={x(metric.ci95_high)} x2={x(metric.ci95_high)} y1={14} y2={28} />
+      <circle className="chart-mean" cx={x(metric.mean)} cy={21} r={5} />
+      <text className="chart-label" x={10} y={54}>{formatNumber(low, 3)}</text>
+      <text className="chart-label chart-label-theory" x={x(metric.theoretical)} y={54} textAnchor="middle">theory {formatNumber(metric.theoretical, 3)}</text>
+      <text className="chart-label" x={width - 10} y={54} textAnchor="end">{formatNumber(high, 3)}</text>
+    </svg>
   );
 }
 
-function Check({ ok }: { ok: boolean }) {
-  return ok ? <span className="text-healthy check"><CircleCheck size={14} />Yes</span> : <span className="text-unhealthy check"><CircleX size={14} />No</span>;
+function Check2({ ok, yes, no }: { ok: boolean; yes: string; no: string }) {
+  return <span className={`check ${ok ? "check-ok" : "check-bad"}`}>{ok ? <Check size={13} /> : <CircleX size={13} />}{ok ? yes : no}</span>;
 }
 
-function Verdict({ verdict }: { verdict: NodeReport["verdict"] }) {
-  if (verdict === "PASS") return <span className="verdict verdict-pass"><CircleCheck size={18} />PASS</span>;
-  if (verdict === "FAIL") return <span className="verdict verdict-fail"><CircleX size={18} />FAIL</span>;
-  return <span className="verdict verdict-pending"><Hourglass size={18} />PENDING</span>;
+function MetricCard({ title, symbol, metric, informational }: { title: string; symbol: string; metric: MetricComparison | null; informational?: boolean }) {
+  return (
+    <article className="metric-card">
+      <header>
+        <div><h3>{title}</h3><span>vs theoretical {symbol}{informational ? " · informational" : ""}</span></div>
+      </header>
+      {metric ? (
+        <>
+          <MetricChart metric={metric} label={title} />
+          <div className="metric-checks">
+            <Check2 ok={metric.within_tolerance} yes="Within tolerance" no="Outside tolerance" />
+            <Check2 ok={metric.theoretical_in_ci} yes="Theory in CI" no="Theory outside CI" />
+          </div>
+          <dl className="metric-numbers">
+            <div><dt>Mean</dt><dd>{formatNumber(metric.mean)}</dd></div>
+            <div><dt>Theoretical</dt><dd>{formatNumber(metric.theoretical)}</dd></div>
+            <div><dt>95% CI</dt><dd>{formatNumber(metric.ci95_low)} – {formatNumber(metric.ci95_high)}</dd></div>
+            <div><dt>Rel. error</dt><dd>{formatPercent(metric.rel_error_pct)} <small>/ {formatPercent(metric.tolerance_pct, 0)}</small></dd></div>
+            <div><dt>Std. dev.</dt><dd>{formatNumber(metric.stddev)}</dd></div>
+            <div><dt>n</dt><dd>{metric.n}</dd></div>
+          </dl>
+        </>
+      ) : <p className="metric-empty">Needs at least two completed replications.</p>}
+    </article>
+  );
+}
+
+function SerialMatch({ report }: { report: NodeReport }) {
+  const match = report.timing.serial_results_match_distributed;
+  if (match === undefined) {
+    return <div className="serial-match serial-none"><span>Serial check</span><strong>{report.timing.serial_note ?? "Not run"}</strong></div>;
+  }
+  return match
+    ? <div className="serial-match serial-ok"><CircleCheck size={18} /><span>Serial and distributed results are identical, seed for seed.</span></div>
+    : <div className="serial-match serial-bad" role="alert"><TriangleAlert size={20} /><span><strong>Serial results do not match distributed results.</strong> The same seeds produced different statistics, so results are not reproducible across nodes. Investigate before trusting this batch.</span></div>;
 }
 
 export function ReportPage({ runId, scenario }: { runId: string; scenario: MockScenario }) {
   const api = useMemo(() => createApiClient(scenario), [scenario]);
-  const [report, setReport] = useState<NodeReport | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [missing, setMissing] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [record, setRecord] = useState<RunRecord | null>(null);
+  const [report, setReport] = useState<NodeReport | NetworkReport | null>(null);
+  const [error, setError] = useState<{ message: string; status: number | null } | null>(null);
+  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
 
   useEffect(() => {
     let active = true;
-    let timer: number | undefined;
-    const load = async () => {
-      try {
-        const next = await api.getReport(runId);
-        if (!active) return;
-        setReport(next);
-        setError(null);
-        if (next.verdict === "PENDING") timer = window.setTimeout(load, PENDING_POLL_MS);
-      } catch (cause) {
-        if (!active) return;
-        if (cause instanceof ApiError && cause.status === 404) {
-          setMissing(cause.message);
-          return;
-        }
-        setError(cause instanceof Error ? cause.message : "Unable to load the report.");
-        timer = window.setTimeout(load, PENDING_POLL_MS);
-      }
-    };
-    void load();
-    return () => {
-      active = false;
-      window.clearTimeout(timer);
-    };
+    setRecord(null);
+    setReport(null);
+    setError(null);
+    api.getRun(runId).then((nextRecord) => {
+      if (active) setRecord(nextRecord);
+    }).catch(() => undefined);
+    api.getReport(runId).then((nextReport) => {
+      if (active) setReport(nextReport);
+    }).catch((cause: unknown) => {
+      if (active) setError({
+        message: cause instanceof Error ? cause.message : "Unable to load the report.",
+        status: cause instanceof ApiError ? cause.status : null,
+      });
+    });
+    return () => { active = false; };
   }, [api, runId]);
 
   const copyJson = async () => {
     if (!report) return;
     try {
       await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      setCopied("copied");
     } catch {
-      setError("The browser blocked clipboard access.");
+      setCopied("failed");
     }
+    window.setTimeout(() => setCopied("idle"), 2000);
   };
 
-  if (missing) {
-    return <section className="page-content"><div className="empty-state"><CircleX size={22} /><strong>Report unavailable</strong><span>{missing}</span><a href="#/launch">Launch a new run</a></div></section>;
-  }
-  if (!report) {
+  if (error) {
+    const lost = record?.state === "coordinator_lost";
     return (
       <section className="page-content">
-        {error && <div className="notice notice-error" role="alert">{error}</div>}
-        <div className="loading-state" role="status"><span className="spinner" />Loading report</div>
+        <div className="empty-state">
+          {lost ? <Unplug size={22} /> : <CircleX size={22} />}
+          <strong>{error.status === 404 ? "Run not found" : lost ? "No report: the coordinator was lost" : "Report unavailable"}</strong>
+          <span>{error.message}</span>
+          {lost
+            ? <a href={`#/launch?resubmit=${encodeURIComponent(runId)}`}><RotateCcw size={14} /> Resubmit with the same base seed</a>
+            : <a href={`#/live/${encodeURIComponent(runId)}`}>Open live view</a>}
+        </div>
       </section>
     );
   }
+  if (!report) {
+    return <section className="page-content"><div className="loading-state" role="status"><span className="spinner" />Loading report</div></section>;
+  }
 
-  const { timing } = report;
-  const smallSample = METRICS.some(({ key }) => {
-    const metric = report[key];
-    return metric !== null && metric.n < SMALL_SAMPLE;
-  });
-  const peerEntries = Object.entries(report.tasks_per_peer).sort(([a], [b]) => a.localeCompare(b));
-  const maxTasks = Math.max(1, ...peerEntries.map(([, count]) => count));
+  if (isNetworkReport(report)) {
+    return <NetworkReportView report={report} runId={runId} api={api} />;
+  }
+  const n = report.mean_wait_time?.n ?? report.tasks.complete;
+  const peerCounts = Object.entries(report.tasks_per_peer).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }));
+  const maxPeer = Math.max(1, ...peerCounts.map(([, count]) => count));
+  const totalDone = peerCounts.reduce((sum, [, count]) => sum + count, 0);
+  const verdictClass = report.verdict === "PASS" ? "verdict-pass" : report.verdict === "FAIL" ? "verdict-fail" : "verdict-pending";
 
   return (
     <section className="page-content" aria-labelledby="report-heading">
       <div className="page-heading">
         <div>
           <p className="eyebrow">BATCH REPORT</p>
-          <h1 id="report-heading">Results</h1>
-          <p className="lede mono">{report.batch_id} · coordinated by {report.coordinator}</p>
+          <h1 id="report-heading">Report</h1>
+          <p className="lede">{report.batch_id} · coordinated by {report.coordinator}</p>
         </div>
         <div className="heading-actions">
-          <button className="secondary-button" type="button" onClick={() => void copyJson()}><Copy size={15} />{copied ? "Copied" : "Copy JSON"}</button>
+          <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}><Activity size={15} />Live view</a>
+          <button className="ghost-button" type="button" onClick={() => void copyJson()} aria-live="polite">
+            {copied === "copied" ? <Check size={15} /> : <Copy size={15} />}
+            {copied === "copied" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy as JSON"}
+          </button>
         </div>
       </div>
 
-      {error && <div className="notice notice-error" role="alert">{error}</div>}
-      {report.stale && <div className="notice notice-warning" role="status">The coordinator is not answering; this is the copy of the report the gateway stored.</div>}
-      {timing.serial_results_match_distributed === false && (
-        <div className="notice notice-error" role="alert">
-          <strong>Serial baseline does not match the distributed results.</strong> The same seeds produced different numbers on one node, so the replications are not reproducible. The speedup figure cannot be trusted.
+      {report.stale && <div className="notice notice-warning stale-notice" role="status"><History size={15} />Stored snapshot: the coordinator is unavailable, so this report may be out of date.</div>}
+      {report.verdict === "PENDING" && <div className="notice notice-warning" role="status">The batch is still running. Statistics are provisional.</div>}
+      {n < SMALL_SAMPLE && <div className="notice notice-warning" role="status"><TriangleAlert size={15} /> Only {n} replications completed. The normal-approximation 95% CI is only reliable for n ≥ {SMALL_SAMPLE}.</div>}
+
+      <div className={`verdict-card ${verdictClass}`}>
+        <div className="verdict-mark">{report.verdict === "PASS" ? <CircleCheck size={30} /> : report.verdict === "FAIL" ? <CircleX size={30} /> : <Activity size={30} />}</div>
+        <div>
+          <p className="eyebrow">VERDICT</p>
+          <strong className="verdict-word">{report.verdict}</strong>
+          <p>{report.verdict_detail}</p>
         </div>
-      )}
-      {smallSample && <div className="notice notice-warning" role="status"><TriangleAlert size={14} /> Fewer than {SMALL_SAMPLE} replications completed. The normal-approximation confidence intervals are unreliable at this size, so treat the verdict as weak evidence.</div>}
-
-      <div className="verdict-panel">
-        <Verdict verdict={report.verdict} />
-        <p>{report.verdict_detail}</p>
       </div>
 
-      <div className="summary-strip">
-        <div className="summary-stat"><span>λ / μ</span><strong>{report.params.lambda} / {report.params.mu}</strong></div>
-        <div className="summary-stat"><span>Replications</span><strong>{report.tasks.complete}<small> / {report.replications_requested}</small></strong></div>
-        <div className="summary-stat"><span>Base seed</span><strong className="mono">{report.base_seed}</strong></div>
-        <div className="summary-stat"><span>Tolerance</span><strong>±{report.tolerance_pct}%</strong></div>
+      <div className="section-title"><h2>Metrics vs M/M/1 theory</h2><span>Dot: mean · whisker: 95% CI · dashed line: theory · band: tolerance</span></div>
+      <div className="metric-grid">
+        <MetricCard title="Mean time in system" symbol="W" metric={report.mean_wait_time} />
+        <MetricCard title="Mean number in system" symbol="L" metric={report.mean_queue_length} />
+        <MetricCard title="Utilization" symbol="ρ" metric={report.utilization} informational />
       </div>
-
-      <div className="section-title"><h2>Simulation vs. theory</h2><span>{report.ci_method}</span></div>
-      <div className="matrix-frame">
-        <table className="metric-table">
-          <thead>
-            <tr><th scope="col">Metric</th><th scope="col">Mean</th><th scope="col">95% CI</th><th scope="col">Theory</th><th scope="col">Rel. error</th><th scope="col">Within tolerance</th><th scope="col">Theory in CI</th><th scope="col" className="ci-col">Interval</th></tr>
-          </thead>
-          <tbody>
-            {METRICS.map(({ key, label, symbol }) => {
-              const metric = report[key];
-              if (!metric) return <tr key={key}><th scope="row">{symbol} <small>{label}</small></th><td colSpan={7} className="muted">No completed replications yet</td></tr>;
-              return (
-                <tr key={key}>
-                  <th scope="row"><span className="metric-symbol">{symbol}</span> <small>{label}</small></th>
-                  <td className="mono">{formatNumber(metric.mean, 4)}</td>
-                  <td className="mono">[{formatNumber(metric.ci95_low, 4)}, {formatNumber(metric.ci95_high, 4)}]</td>
-                  <td className="mono">{formatNumber(metric.theoretical, 4)}</td>
-                  <td className="mono">{formatNumber(metric.rel_error_pct, 2)}%</td>
-                  <td><Check ok={metric.within_tolerance} /></td>
-                  <td><Check ok={metric.theoretical_in_ci} /></td>
-                  <td className="ci-col"><CiBar metric={metric} /></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <p className="legend"><span className="legend-range" />95% CI <span className="legend-mean" />Mean <span className="legend-theory" />Theory</p>
 
       <div className="report-columns">
-        <section>
-          <div className="section-title"><h2>Work per node</h2><span>{report.tasks.complete} complete · {report.tasks.failed} failed</span></div>
-          <div className="peer-bars">
-            {peerEntries.map(([peer, count]) => (
-              <div className="peer-bar" key={peer}>
-                <span>{peer}</span>
-                <div className="progress-track"><span className="progress-fill" style={{ width: `${(count / maxTasks) * 100}%` }} /></div>
-                <strong>{count}</strong>
-              </div>
-            ))}
-            {peerEntries.length === 0 && <p className="muted">No tasks completed yet.</p>}
-          </div>
-          {report.failed_tasks.length > 0 && (
-            <details className="failed-tasks">
-              <summary>{report.failed_tasks.length} failed task{report.failed_tasks.length === 1 ? "" : "s"}</summary>
-              <ul>{report.failed_tasks.map((task) => <li key={task.task_id}><span className="mono">{task.task_id}</span> seed {task.seed}, {task.attempts} attempts: {task.error}</li>)}</ul>
-            </details>
+        <div className="panel">
+          <div className="panel-title"><h2>Tasks per node</h2><span>Completed results</span></div>
+          {peerCounts.length === 0 ? <p className="metric-empty">No completed results yet.</p> : (
+            <ul className="peer-bars">
+              {peerCounts.map(([peer, count]) => (
+                <li key={peer}>
+                  <span className="peer-name">{peer}</span>
+                  <span className="peer-bar"><i style={{ width: `${(count / maxPeer) * 100}%` }} /></span>
+                  <span className="peer-count">{count}<small> · {((count / totalDone) * 100).toFixed(0)}%</small></span>
+                </li>
+              ))}
+            </ul>
           )}
-        </section>
+          <p className="panel-note">{report.timing.distributed_peers} nodes in the pool · {report.tasks.failed_attempts} failed attempt(s) retried · {report.tasks.failed} permanently failed</p>
+        </div>
 
-        <section>
-          <div className="section-title"><h2>Timing</h2><span>{timing.distributed_peers} peers</span></div>
+        <div className="panel">
+          <div className="panel-title"><h2>Timing</h2><span>Distributed vs serial</span></div>
+          <div className="speedup"><span>Speedup</span><strong>{formatSpeedup(report.timing.speedup)}</strong></div>
           <dl className="timing-list">
-            <div><dt>Distributed wall clock</dt><dd>{formatSeconds(timing.distributed_wall_clock_seconds)}</dd></div>
-            <div><dt>Sum of replication runtimes</dt><dd>{formatSeconds(timing.sum_replication_runtime_seconds)}</dd></div>
-            <div><dt>Serial wall clock{timing.serial_peer ? ` (${timing.serial_peer})` : ""}</dt><dd>{formatSeconds(timing.serial_wall_clock_seconds)}</dd></div>
-            <div><dt>Speedup</dt><dd className="speedup">{timing.speedup === null ? "--" : `${timing.speedup.toFixed(2)}×`}</dd></div>
-            {timing.serial_results_match_distributed !== undefined && (
-              <div><dt>Serial results match</dt><dd><Check ok={timing.serial_results_match_distributed} /></dd></div>
-            )}
+            <div><dt>Distributed wall clock</dt><dd>{formatDuration(report.timing.distributed_wall_clock_seconds)}</dd></div>
+            <div><dt>Serial wall clock{report.timing.serial_peer ? ` (${report.timing.serial_peer})` : ""}</dt><dd>{formatDuration(report.timing.serial_wall_clock_seconds)}</dd></div>
+            <div><dt>Sum of replication runtimes</dt><dd>{formatDuration(report.timing.sum_replication_runtime_seconds)}</dd></div>
           </dl>
-          {timing.serial_note && <p className="muted small">{timing.serial_note}</p>}
-        </section>
+          <SerialMatch report={report} />
+        </div>
       </div>
+
+      {report.failed_tasks.length > 0 && (
+        <>
+          <div className="section-title"><h2>Permanently failed tasks</h2><span>{report.failed_tasks.length}</span></div>
+          <div className="matrix-frame">
+            <table className="data-table">
+              <thead><tr><th scope="col">Task</th><th scope="col">Seed</th><th scope="col">Attempts</th><th scope="col">Last error</th></tr></thead>
+              <tbody>{report.failed_tasks.map((task) => <tr key={task.task_id}><td>{task.task_id}</td><td>{task.seed}</td><td>{task.attempts}</td><td>{task.error}</td></tr>)}</tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      <div className="section-title"><h2>Parameters</h2></div>
+      <dl className="meta-strip params-strip">
+        <div><dt>λ</dt><dd>{report.params.lambda}</dd></div>
+        <div><dt>μ</dt><dd>{report.params.mu}</dd></div>
+        <div><dt>ρ</dt><dd>{formatNumber(report.theoretical.rho, 3)}</dd></div>
+        <div><dt>Simulation time</dt><dd>{report.params.sim_time}</dd></div>
+        <div><dt>Warmup</dt><dd>{report.params.warmup_time}</dd></div>
+        <div><dt>Replications</dt><dd>{report.replications_requested}</dd></div>
+        <div><dt>Base seed</dt><dd>{report.base_seed}</dd></div>
+        <div><dt>Tolerance</dt><dd>{formatPercent(report.tolerance_pct, 0)}</dd></div>
+        <div className="meta-wide"><dt>Seed scheme</dt><dd>{report.seed_scheme}</dd></div>
+        <div className="meta-wide"><dt>CI method</dt><dd>{report.ci_method}</dd></div>
+      </dl>
     </section>
   );
 }

@@ -1,6 +1,6 @@
 # Gateway API Contract (Draft)
 
-Status: draft for review before frontend and gateway implementation. The gateway is a same-origin HTTP API for the SPA; it is not a batch coordinator. JSON field names and downstream behavior below are based on [`node-api-observed.md`](node-api-observed.md).
+Status: implemented in `gateway/` (2026-10-04); behavior beyond this draft is recorded in [`assumptions.md`](assumptions.md). The gateway is a same-origin HTTP API for the SPA; it is not a batch coordinator. JSON field names and downstream behavior below are based on [`node-api-observed.md`](node-api-observed.md).
 
 ## Common Rules
 
@@ -79,6 +79,12 @@ On node `202`, return `202` with the node start response plus `run_id`:
 
 Pass node `400` and `409` status and error JSON through unchanged. Other downstream failures map to `502` (unreachable or invalid response) or `504` (timeout). If the node accepted a run but the gateway cannot persist its history record, return a gateway error with `accepted: true`, `run_id`, `coordinator`, and `batch_id` when known; do not imply the node rejected the run.
 
+Network runs: send `kind: "network"` with `scenario` (and optional `replications`, `base_seed`); the gateway forwards to the node's `POST /netrun`. The stored `params` carry `kind` and `scenario`, and status, report and history work the same way. `GET /api/runs/{id}/report` then returns the network report shape (see `node-api-observed.md`).
+
+### `POST /api/netstream`
+
+Body `{node, scenario, speed, seed?}`. Relays the named node's `POST /netstream` (only `{scenario, speed, seed}` is forwarded). Same error mapping as `/api/stream`.
+
 ### `GET /api/runs?limit=&offset=`
 
 Returns newest-first history:
@@ -100,6 +106,10 @@ Proxy live `GET /status?batch_id=...` to the recorded coordinator. Return the no
 ### `GET /api/runs/{run_id}/report`
 
 Proxy live `GET /report?batch_id=...` and return its real node report shape plus `stale: false`. If unavailable, return a previously captured final report plus `stale: true`. If no final report was captured, return `502`/`504` with a JSON error. Unknown run returns `404`.
+
+### `GET /api/stream?node=&lambda=&mu=&duration=&speed=&seed=`
+
+Relays a live traffic stream from the named configured node (`GET /stream` on that node) to the browser as `text/event-stream`. Only the five simulation parameters are forwarded. Unknown node: `400`. Node `400`/`503` are passed through. Closing the browser connection closes the node stream, which stops the simulation.
 
 ### `GET /healthz`
 

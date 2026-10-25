@@ -101,6 +101,19 @@ Top-level fields are `batch_id`, `coordinator`, `state`, `phase`, `verdict`, `ve
 
 The report's sample statistics use the normal-approximation 95% interval `mean +/- 1.96 * sample_stddev / sqrt(n)`. The report identifies it as valid for `n >= 30`; it does not suppress the interval for smaller samples.
 
+## `GET /stream` (added 2026-10-04 for the live traffic view)
+
+Query: `lambda`, `mu` (required); `duration` (default 300), `speed` (simulated time units per wall-clock second, default 10), `seed` (default current Unix milliseconds). Bounds: ρ = λ/μ ≤ 1.5, 0 < duration ≤ 3600, λ × speed ≤ 200. Invalid parameters return `400` JSON; a node with no free simulation slot returns `503` JSON.
+
+On success: `200 text/event-stream`. Each message is `data: <JSON>` with `type` one of `meta` (parameters and M/M/1 theory, or `null` theory when ρ ≥ 1), `arrival`, `start`, `depart`, `stats` (about four per second), `done`, or `error`. The node kills the simulation when the client disconnects.
+
+## Network scenarios (added 2026-10-04)
+
+- `POST /netrun` body `{scenario, replications?, base_seed?}` (replications default 30, 2..10,000). The coordinator validates the scenario with `netsim.py --validate` (`400` with the simulator's message if invalid), then dispatches tasks whose `network` field carries the scenario. `202` has the same shape as `/run`; `409` while another network batch runs on this node.
+- `GET /status?batch_id=` and `GET /report?batch_id=` answer for network batches too. Status has the M/M/1 shape plus `"kind": "network"`. The report has `kind`, `verdict` (`PENDING` / `COMPLETE` / `FAIL`), `scenario`, `flows`, `links`, `routers` and `totals` as `id -> metric -> {n, mean, stddev, ci95_low, ci95_high, ci95_half_width}` (or `null`), `series` (per-bin mean and CI bands), `tasks_per_peer` and `timing.parallelism`.
+- `POST /netstream` body `{scenario, speed, seed?, start?}`: one replication in real time as Server-Sent Events. With `start` > 0 the simulator fast-forwards silently to that time and sends a `seek` event (failed elements, routes, queues, per-flow counters); the packets are identical to a run from t = 0 with the same seed. Events: `meta` (with routes), `send`, `hop`, `deliver`, `drop` (with reason), `failure` (with recomputed routes), `stats` (per-link and per-router load and queue, per-flow counters), `done` (with metrics), or `error`.
+- `POST /task` accepts an optional `network` field; the result then carries `network` metrics instead of the M/M/1 fields.
+
 ## `POST /task`
 
 Node-to-node request:

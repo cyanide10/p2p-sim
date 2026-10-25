@@ -1,307 +1,431 @@
-// Package server exposes the gateway API used by the web app. The gateway
-// never coordinates batches; it forwards to the chosen coordinator, keeps a
-// copy of what it learns, and serves that copy when the node is unreachable.
+// Package server exposes the gateway API (docs/gateway-api.md) and serves the
+// GUI's static bundle from the same origin.
 package server
 
 import (
+	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"path"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/p2p-sim/gateway/internal/cluster"
+	"github.com/p2p-sim/gateway/internal/aggregate"
 	"github.com/p2p-sim/gateway/internal/config"
 	"github.com/p2p-sim/gateway/internal/nodeclient"
 	"github.com/p2p-sim/gateway/internal/runs"
+	"github.com/p2p-sim/gateway/internal/store"
 )
 
 const (
-	maxBodyBytes = 1 << 20
-	defaultLimit = 50
-	maxLimit     = 200
+	maxRequestBody   = 1 << 20
+	defaultListLimit = 50
+	maxListLimit     = 200
+	clusterFanout    = 8
 )
 
-type Deps struct {
-	Peers    []config.Peer
-	Defaults config.Defaults
-	Client   *nodeclient.Client
-	Store    *runs.Store
-	Tracker  *runs.Tracker
-	Logger   *slog.Logger
+const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+	"connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+
+type Options struct {
+	Peers    *config.PeerSource
+	Nodes    *nodeclient.Client
+	Runs     *runs.Manager
+	Defaults config.RunDefaults
+	Token    string // bearer token for /api/*; empty disables auth
 	Version  string
+	Static   fs.FS // built GUI; may lack index.html
+	Log      *slog.Logger
 }
 
-type server struct {
-	Deps
-	peerURLs map[string]string
+type Server struct {
+	opts Options
 }
 
-func New(d Deps) http.Handler {
-	s := &server{Deps: d, peerURLs: make(map[string]string, len(d.Peers))}
-	for _, p := range d.Peers {
-		s.peerURLs[p.ID] = p.URL
-	}
+// Handler returns the complete gateway handler with middleware applied.
+func Handler(opts Options) http.Handler {
+	s := &Server{opts: opts}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
+	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /api/config", s.config)
 	mux.HandleFunc("GET /api/cluster", s.cluster)
 	mux.HandleFunc("POST /api/runs", s.createRun)
 	mux.HandleFunc("GET /api/runs", s.listRuns)
 	mux.HandleFunc("GET /api/runs/{id}", s.getRun)
-	mux.HandleFunc("GET /api/runs/{id}/status", s.status)
-	mux.HandleFunc("GET /api/runs/{id}/report", s.report)
-	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
-		writeError(w, http.StatusNotFound, "no such API route")
+	mux.HandleFunc("GET /api/runs/{id}/status", s.runStatus)
+	mux.HandleFunc("GET /api/runs/{id}/report", s.runReport)
+	mux.HandleFunc("GET /api/stream", s.stream)
+	mux.HandleFunc("POST /api/netstream", s.netStream)
+	// Other methods on API paths fall through to static(), which answers 405.
+	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "no such API endpoint")
 	})
-	return s.wrap(mux)
+	mux.Handle("/", s.static())
+	return s.recover(s.logRequests(securityHeaders(s.auth(mux))))
 }
 
-func (s *server) wrap(next http.Handler) http.Handler {
+func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) config(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"defaults":        s.opts.Defaults,
+		"peers":           s.opts.Peers.Peers(),
+		"gateway_version": s.opts.Version,
+		// Nodes expose aggregate counts only, so there is no per-task data.
+		"features": map[string]bool{"task_grid": false},
+	})
+}
+
+func (s *Server) cluster(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, aggregate.Cluster(r.Context(), s.opts.Nodes, s.opts.Peers.Peers(), clusterFanout))
+}
+
+func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
+	var req runs.CreateRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	created, err := s.opts.Runs.Create(r.Context(), req)
+	if err != nil {
+		s.writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, created)
+}
+
+func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
+	limit, offset := defaultListLimit, 0
+	q := r.URL.Query()
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "limit must be a positive integer")
+			return
+		}
+		limit = min(n, maxListLimit)
+	}
+	if v := q.Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "offset must be a nonnegative integer")
+			return
+		}
+		offset = n
+	}
+	list, total, err := s.opts.Runs.List(r.Context(), limit, offset)
+	if err != nil {
+		s.writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": list, "limit": limit, "offset": offset, "total": total})
+}
+
+func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
+	run, err := s.opts.Runs.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Server) runStatus(w http.ResponseWriter, r *http.Request) {
+	body, err := s.opts.Runs.Status(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeErr(w, r, err)
+		return
+	}
+	writeRaw(w, http.StatusOK, body)
+}
+
+func (s *Server) runReport(w http.ResponseWriter, r *http.Request) {
+	body, err := s.opts.Runs.Report(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeErr(w, r, err)
+		return
+	}
+	writeRaw(w, http.StatusOK, body)
+}
+
+// streamParams are the query parameters forwarded to a node's /stream.
+var streamParams = []string{"lambda", "mu", "duration", "speed", "seed"}
+
+// stream relays a live traffic stream from the chosen node to the browser.
+// The node runs the simulation; closing the page closes both connections.
+func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	peer, ok := s.opts.Peers.Lookup(q.Get("node"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown node %q", q.Get("node")))
+		return
+	}
+	forward := url.Values{}
+	for _, key := range streamParams {
+		if v := q.Get(key); v != "" {
+			forward.Set(key, v)
+		}
+	}
+	body, err := s.opts.Nodes.OpenStream(r.Context(), peer.URL, forward)
+	if err != nil {
+		s.writeErr(w, r, err)
+		return
+	}
+	s.relaySSE(w, body)
+}
+
+// netStream relays a live network-scenario stream: body {node, scenario,
+// speed, seed}; the node gets {scenario, speed, seed}.
+func (s *Server) netStream(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Node     string          `json:"node"`
+		Scenario json.RawMessage `json:"scenario"`
+		Speed    float64         `json:"speed"`
+		Seed     *int64          `json:"seed,omitempty"`
+		Start    float64         `json:"start"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	peer, ok := s.opts.Peers.Lookup(req.Node)
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown node %q", req.Node))
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{"scenario": req.Scenario, "speed": req.Speed, "seed": req.Seed, "start": req.Start})
+	body, err := s.opts.Nodes.OpenNetStream(r.Context(), peer.URL, payload)
+	if err != nil {
+		s.writeErr(w, r, err)
+		return
+	}
+	s.relaySSE(w, body)
+}
+
+// relaySSE copies a node's event stream to the client, flushing as it goes.
+func (s *Server) relaySSE(w http.ResponseWriter, body io.ReadCloser) {
+	defer body.Close()
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		s.opts.Log.Warn("live stream: cannot clear write deadline", "err", err)
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	rc.Flush()
+	buf := make([]byte, 32<<10)
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			if _, err := w.Write(buf[:n]); err != nil {
+				return
+			}
+			if err := rc.Flush(); err != nil {
+				return
+			}
+		}
+		if readErr != nil {
+			return
+		}
+	}
+}
+
+// writeErr maps errors to responses: validation 400, unknown run 404, node
+// 400/409/503 passed through unchanged, node timeout 504, other node failures 502.
+func (s *Server) writeErr(w http.ResponseWriter, r *http.Request, err error) {
+	var validation *runs.ValidationError
+	var accepted *runs.AcceptedError
+	var nodeErr *nodeclient.Error
+	switch {
+	case errors.As(err, &validation):
+		writeError(w, http.StatusBadRequest, validation.Message)
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "run not found")
+	case errors.As(err, &accepted):
+		s.opts.Log.Error("run accepted but not recorded", "err", err, "batch_id", accepted.Created.BatchID)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": accepted.Error(), "accepted": true, "run_id": accepted.Created.RunID,
+			"coordinator": accepted.Created.Coordinator, "batch_id": accepted.Created.BatchID,
+		})
+	case errors.As(err, &nodeErr):
+		switch {
+		case nodeErr.Kind == nodeclient.KindStatus && (nodeErr.Status == 400 || nodeErr.Status == 409 || nodeErr.Status == 503):
+			if nodeErr.Body != nil {
+				writeRaw(w, nodeErr.Status, nodeErr.Body)
+			} else {
+				writeError(w, nodeErr.Status, nodeErr.Message)
+			}
+		case nodeErr.Kind == nodeclient.KindStatus && nodeErr.Status == 404:
+			writeError(w, http.StatusBadGateway, "the coordinator no longer knows this batch")
+		case nodeErr.Kind == nodeclient.KindTimeout:
+			writeError(w, http.StatusGatewayTimeout, nodeErr.Error())
+		default:
+			writeError(w, http.StatusBadGateway, nodeErr.Error())
+		}
+	default:
+		s.opts.Log.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+// static serves the embedded GUI with an index.html fallback for client
+// routes. Paths are cleaned and resolved inside the embedded FS only.
+func (s *Server) static() http.Handler {
+	files := http.FileServerFS(s.opts.Static)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if name != "" && name != "index.html" && fs.ValidPath(name) {
+			if info, err := fs.Stat(s.opts.Static, name); err == nil && !info.IsDir() {
+				if strings.HasPrefix(name, "assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				}
+				r.URL.Path = "/" + name
+				files.ServeHTTP(w, r)
+				return
+			}
+		}
+		index, err := fs.ReadFile(s.opts.Static, "index.html")
+		if err != nil {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, notBuiltPage)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(index))
+	})
+}
+
+const notBuiltPage = `<!doctype html><meta charset="utf-8"><title>p2p-sim gateway</title>
+<p>The gateway is running, but the GUI bundle was not embedded in this build.</p>
+<p>Build it with <code>cd web &amp;&amp; VITE_USE_MOCK=false npm run build</code>, copy <code>web/dist/*</code> into
+<code>gateway/webui/dist/</code>, and rebuild the gateway. The Docker image does this automatically.</p>`
+
+func (s *Server) auth(next http.Handler) http.Handler {
+	if s.opts.Token == "" {
+		return next
+	}
+	want := []byte("Bearer " + s.opts.Token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") &&
+			subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="p2p-sim"`)
+			writeError(w, http.StatusUnauthorized, "missing or invalid bearer token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			h.Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap lets http.ResponseController reach Flush and SetWriteDeadline.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		level := slog.LevelDebug
+		if strings.HasPrefix(r.URL.Path, "/api/") && (r.Method != http.MethodGet || rec.status >= 400) {
+			level = slog.LevelInfo
+		}
+		s.opts.Log.Log(r.Context(), level, "request", "method", r.Method, "path", r.URL.Path,
+			"status", rec.status, "duration_ms", time.Since(start).Milliseconds())
+	})
+}
+
+func (s *Server) recover(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {
 				if v == http.ErrAbortHandler {
 					panic(v)
 				}
-				s.Logger.Error("handler panic", "path", r.URL.Path, "panic", fmt.Sprint(v))
+				s.opts.Log.Error("panic in handler", "path", r.URL.Path, "panic", fmt.Sprint(v))
 				writeError(w, http.StatusInternalServerError, "internal error")
 			}
 		}()
-		w.Header().Set("X-Content-Type-Options", "nosniff")
 		next.ServeHTTP(w, r)
-		s.Logger.Debug("request", "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(start).Milliseconds())
 	})
 }
 
-func (s *server) config(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"defaults":        s.Defaults,
-		"peers":           s.Peers,
-		"gateway_version": s.Version,
-		"features":        map[string]bool{"task_grid": false},
-	})
-}
-
-func (s *server) cluster(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, cluster.Probe(r.Context(), s.Client, s.Peers))
-}
-
-func (s *server) createRun(w http.ResponseWriter, r *http.Request) {
-	var req runs.CreateRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+// decodeJSON reads one JSON object, rejecting unknown fields, trailing data
+// and bodies over 1 MiB. It writes the error response itself.
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		var tooBig *http.MaxBytesError
-		if errors.As(err, &tooBig) {
-			writeError(w, http.StatusBadRequest, "request body exceeds 1 MiB")
+	if err := dec.Decode(dst); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds 1 MiB")
 		} else {
-			writeError(w, http.StatusBadRequest, "invalid request JSON: "+err.Error())
+			writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		}
-		return
+		return false
 	}
-	if req.Coordinator == "" {
-		writeError(w, http.StatusBadRequest, "coordinator is required")
-		return
+	if dec.More() {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: unexpected data after the object")
+		return false
 	}
-	base, ok := s.peerURLs[req.Coordinator]
-	if !ok {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown coordinator %q", req.Coordinator))
-		return
-	}
-	nodeReq, err := runs.Resolve(req, s.Defaults)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if !s.Store.HasRoom() {
-		writeError(w, http.StatusServiceUnavailable, runs.ErrFull.Error())
-		return
-	}
-
-	body, _ := json.Marshal(nodeReq)
-	started, err := s.Client.Run(r.Context(), base, body)
-	if err != nil {
-		s.Logger.Warn("run submission failed", "coordinator", req.Coordinator, "error", err)
-		writeNodeError(w, err, true)
-		return
-	}
-
-	rec := runs.Record{
-		RunID:       runs.EncodeID(req.Coordinator, started.BatchID),
-		BatchID:     started.BatchID,
-		Coordinator: req.Coordinator,
-		CreatedAt:   time.Now().UTC(),
-		Params:      nodeReq.Params(started.Replications, started.BaseSeed),
-		State:       runs.Running,
-	}
-	if err := s.Store.Add(rec); err != nil {
-		// The node is already running the batch; say so rather than implying it was rejected.
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"error":    "the coordinator accepted the run but the gateway could not record it: " + err.Error(),
-			"accepted": true, "run_id": rec.RunID, "coordinator": rec.Coordinator, "batch_id": rec.BatchID,
-		})
-		return
-	}
-	s.Tracker.Track(rec.RunID)
-	s.Logger.Info("run started", "run_id", rec.RunID, "coordinator", rec.Coordinator, "batch_id", rec.BatchID)
-
-	writeJSON(w, http.StatusAccepted, map[string]any{
-		"run_id":       rec.RunID,
-		"batch_id":     started.BatchID,
-		"status":       started.Status,
-		"coordinator":  req.Coordinator,
-		"replications": started.Replications,
-		"base_seed":    started.BaseSeed,
-		"peers":        started.Peers,
-	})
-}
-
-func (s *server) listRuns(w http.ResponseWriter, r *http.Request) {
-	limit, ok := queryInt(w, r, "limit", defaultLimit)
-	if !ok {
-		return
-	}
-	offset, ok := queryInt(w, r, "offset", 0)
-	if !ok {
-		return
-	}
-	limit = min(limit, maxLimit)
-	list, total := s.Store.List(limit, offset)
-	writeJSON(w, http.StatusOK, map[string]any{"runs": list, "limit": limit, "offset": offset, "total": total})
-}
-
-func queryInt(w http.ResponseWriter, r *http.Request, name string, def int) (int, bool) {
-	v := r.URL.Query().Get(name)
-	if v == "" {
-		return def, true
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 {
-		writeError(w, http.StatusBadRequest, name+" must be a non-negative integer")
-		return 0, false
-	}
-	return n, true
-}
-
-func (s *server) lookup(w http.ResponseWriter, r *http.Request) (runs.Record, bool) {
-	id := r.PathValue("id")
-	if _, _, err := runs.DecodeID(id); err != nil {
-		writeError(w, http.StatusNotFound, "run not found")
-		return runs.Record{}, false
-	}
-	rec, ok := s.Store.Get(id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "run not found")
-	}
-	return rec, ok
-}
-
-func (s *server) getRun(w http.ResponseWriter, r *http.Request) {
-	if rec, ok := s.lookup(w, r); ok {
-		writeJSON(w, http.StatusOK, rec)
-	}
-}
-
-func (s *server) status(w http.ResponseWriter, r *http.Request) {
-	rec, ok := s.lookup(w, r)
-	if !ok {
-		return
-	}
-	live, err := s.Client.Status(r.Context(), s.peerURLs[rec.Coordinator], rec.BatchID)
-	if err == nil {
-		s.Store.SetStatus(rec.RunID, live)
-		writeRaw(w, withStale(live, false))
-		return
-	}
-	s.fallback(w, rec.Status, err)
-}
-
-func (s *server) report(w http.ResponseWriter, r *http.Request) {
-	rec, ok := s.lookup(w, r)
-	if !ok {
-		return
-	}
-	live, err := s.Client.Report(r.Context(), s.peerURLs[rec.Coordinator], rec.BatchID)
-	if err == nil {
-		if stateOf(live) == "complete" {
-			s.Store.SetReport(rec.RunID, live)
-		}
-		writeRaw(w, withStale(live, false))
-		return
-	}
-	s.fallback(w, rec.Report, err)
-}
-
-// fallback serves a stored copy marked stale, or explains why there is none.
-func (s *server) fallback(w http.ResponseWriter, stored json.RawMessage, err error) {
-	switch {
-	case stored != nil:
-		writeRaw(w, withStale(stored, true))
-	case nodeclient.IsNotFound(err):
-		writeError(w, http.StatusNotFound, "coordinator no longer holds this batch")
-	default:
-		writeNodeError(w, err, false)
-	}
-}
-
-func stateOf(obj json.RawMessage) string {
-	var v struct {
-		State string `json:"state"`
-	}
-	_ = json.Unmarshal(obj, &v)
-	return v.State
-}
-
-// withStale adds a top-level "stale" field to a node JSON object.
-func withStale(obj json.RawMessage, stale bool) json.RawMessage {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(obj, &m); err != nil {
-		m = map[string]json.RawMessage{}
-	}
-	m["stale"] = json.RawMessage(strconv.FormatBool(stale))
-	out, _ := json.Marshal(m)
-	return out
-}
-
-// writeNodeError maps a node failure to a gateway status. With passthrough,
-// node 400 and 409 bodies are returned unchanged so the UI shows the node's
-// own message (and the busy batch id).
-func writeNodeError(w http.ResponseWriter, err error, passthrough bool) {
-	var e *nodeclient.Error
-	if errors.As(err, &e) {
-		if passthrough && e.Kind == nodeclient.HTTP &&
-			(e.StatusCode == http.StatusBadRequest || e.StatusCode == http.StatusConflict) && json.Valid(e.Body) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(e.StatusCode)
-			_, _ = w.Write(e.Body)
-			return
-		}
-		if e.Kind == nodeclient.Timeout {
-			writeError(w, http.StatusGatewayTimeout, err.Error())
-			return
-		}
-	}
-	writeError(w, http.StatusBadGateway, err.Error())
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	body, err := json.Marshal(v)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeRaw(w, status, body)
 }
 
-func writeRaw(w http.ResponseWriter, body json.RawMessage) {
+func writeRaw(w http.ResponseWriter, status int, body []byte) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(append(body, '\n'))
+	w.WriteHeader(status)
+	w.Write(body)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	body, _ := json.Marshal(map[string]string{"error": message})
+	writeRaw(w, status, body)
 }

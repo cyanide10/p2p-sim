@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/p2p-sim/node/internal/batch"
 	"github.com/p2p-sim/node/internal/config"
 	"github.com/p2p-sim/node/internal/dispatch"
+	"github.com/p2p-sim/node/internal/netbatch"
 	"github.com/p2p-sim/node/internal/peers"
 	"github.com/p2p-sim/node/internal/sim"
 	"github.com/p2p-sim/node/internal/worker"
@@ -78,11 +80,14 @@ func run(logger *slog.Logger) error {
 	defer stop()
 
 	// Executing side.
+	// netsim.py sits next to simulate.py.
+	netScript := filepath.Join(filepath.Dir(cfg.SimScript), "netsim.py")
 	runner := &sim.SimRunner{
-		Cmd:     sim.ExecCommandRunner{},
-		Python:  cfg.PythonBin,
-		Script:  cfg.SimScript,
-		Timeout: cfg.SimTimeout,
+		Cmd:       sim.ExecCommandRunner{},
+		Python:    cfg.PythonBin,
+		Script:    cfg.SimScript,
+		NetScript: netScript,
+		Timeout:   cfg.SimTimeout,
 	}
 	executor := worker.New(runner, nodeID, cfg.MaxConcurrentTasks, logger)
 
@@ -102,15 +107,23 @@ func run(logger *slog.Logger) error {
 		Logger: logger,
 	}
 	manager := batch.NewManager(ctx, dispatcher, peerList, nodeID, cfg.Defaults, cfg.PhaseTimeout, logger)
+	netsim := &sim.Network{Python: cfg.PythonBin, Script: netScript}
+	netManager := netbatch.NewManager(ctx, dispatcher, peerList, nodeID, netsim, cfg.PhaseTimeout, logger)
 
 	// POST /task can take up to SimTimeout; GET /peers up to HealthTimeout.
 	writeTimeout := cfg.SimTimeout + 5*time.Second
 	if w := cfg.HealthTimeout + 10*time.Second; w > writeTimeout {
 		writeTimeout = w
 	}
+	// Live traffic streams run on this node and share its simulation slots.
+	streamer := &sim.Streamer{Python: cfg.PythonBin, Script: cfg.SimScript}
+	routes := http.NewServeMux()
+	routes.Handle("GET /stream", api.StreamHandler(streamer, executor, nodeID, logger))
+	routes.Handle("/", api.NetworkHandler(netManager, netsim, executor, nodeID, logger,
+		api.NewHandler(manager, nodeID, peerList, client, executor, logger)))
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           api.NewHandler(manager, nodeID, peerList, client, executor, logger),
+		Handler:           routes,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      writeTimeout,

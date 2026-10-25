@@ -69,6 +69,39 @@ docker compose -f docker-compose.yml -f docker-compose.node4.yml up --build
 This adds `node-4` and gives **every** node `config/peers.4.yaml`. Membership is
 symmetric, so all nodes must share the same list.
 
+## GUI
+
+A web GUI (`web/`, React + Vite) is served by the **gateway** (`gateway/`, Go). The gateway probes every node, submits batches to the coordinator you pick, tracks them until they finish and keeps run history in SQLite. The simulations themselves run on the nodes.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.web.yml up --build   # 3 nodes + gateway
+# open http://localhost:8090
+```
+
+- **Network lab:** draw any network (hosts, routers with service rate and buffer, links with bandwidth, delay and buffer), add flows between hosts (steady, rate schedules with steps or ramps, or bursty on/off), and schedule link or router failures. Routing is shortest path and is recomputed on every failure and recovery. Then either:
+  - **Watch live:** one node simulates the network in real time; packets move along links in their flow's color, links thicken and darken with load, saturated links are flagged, and failures and drops are shown as they happen.
+  - **Run on all nodes:** N independent copies (different seeds) are spread over every node, as with M/M/1 batches, with the same retry and failover. The report gives per-flow throughput, delay, p95 delay and loss, and per-link and per-router load, each ± 95% CI, plus traffic and delay over time with failures marked, and a load heatmap of the topology.
+  Three sample networks are included; networks can be exported and imported as JSON.
+  - **Playback everywhere:** the live view, the progress page of a cluster run and its report all have a player with play/pause, a time slider, speed and a copy picker. Seeking restarts the copy on a node from that moment; a seed fixes every packet, so replaying copy *k* shows exactly the packets that went into the results.
+- **Live traffic:** watch packets move through one simulated router queue in real time. Pick a node, λ, μ and a playback speed; that node runs the SimPy model paced to the wall clock and streams every arrival, service start and delivery to the browser. Live charts show packets in system and per-packet delay against M/M/1 theory (L and W). Presets cover light, busy and overloaded (ρ > 1) traffic.
+- **Cluster:** health, latency and each node's view of its peers.
+- **Launch run:** parameters, coordinator choice, live ρ / W / L preview, and a "try another node" action when the chosen node is busy (409).
+- **Live batch:** progress polled from the coordinator. If the coordinator dies, the gateway marks the run `coordinator_lost` after 5 failed polls (about 5 s), shows the last snapshot, and offers a resubmit with the same base seed on another node.
+- **Report:** verdict, metrics with 95% CI against M/M/1 theory, tasks per node, distributed vs serial timing, and the serial-match check.
+
+Settings: `GUI_PORT` / `GUI_BIND` (default `127.0.0.1:8090`); `GATEWAY_PEERS=peers.4.yaml` together with `docker-compose.node4.yml`. History lives in the `gateway-data` volume. `GATEWAY_TOKEN` protects `/api/*` for scripted clients, but the GUI cannot send a token yet, so leave it unset when using the GUI.
+
+**Without Docker:**
+
+```bash
+(cd web && npm ci && VITE_USE_MOCK=false npx vite build)
+cp -r web/dist/. gateway/webui/dist/
+(cd gateway && go build -o gateway ./cmd/gateway)
+GATEWAY_LISTEN=127.0.0.1:18080 PEERS_CONFIG=my-peers.yaml GATEWAY_DB=gateway/data/gateway.db gateway/gateway
+```
+
+**GUI development:** `cd web && npm run dev` runs the GUI against a built-in mock API, with a scenario picker on the Cluster screen (worker failure, coordinator loss, busy node, serial mismatch and more). `GATEWAY_URL=http://127.0.0.1:8090 npm run dev:gateway` points it at a real gateway instead. A mock-only container is also available: `docker compose -f docker-compose.web.yml --profile mock up --build web` (port 8091).
+
 ## Running without Docker
 
 ```bash
@@ -86,13 +119,20 @@ and a unique `NODE_ID` that matches its entry.
 ## Tests
 
 ```bash
-cd sim && ../.venv/bin/python -m pytest -q     # SimPy model vs M/M/1 and M/D/1 theory, CLI contract
+cd sim && ../.venv/bin/python -m pytest -q     # SimPy models: M/M/1, M/D/1, network (routing, failures, traffic patterns), CLI contracts
 cd node && go test -race ./...                 # stats, config, dispatch/retry/busy, routing, worker, API
+cd web && npm run typecheck && npm test        # GUI: validation, stats, mock run timeline
+cd gateway && go test -race ./...              # gateway: config, node client, cluster, store, tracking, HTTP (fake nodes)
 ```
 
 None of the Go tests need Docker, a network, or Python.
 
 ## API (every node, port 8000)
+
+Network scenarios (`sim/netsim.py`, JSON on stdin): `POST /netrun {scenario, replications, base_seed}` starts a distributed network batch (tracked through the same `/status` and `/report` with its `batch_id`); `POST /netstream {scenario, speed, seed, start}` streams one live network replication (from simulated time `start`, after fast-forwarding to it) as Server-Sent Events. Limits: 60 nodes, 120 links, 40 flows, 60 failure events, at most 150,000 offered packets per replication, and 150 packets per second when streaming.
+
+`GET /stream?lambda=&mu=&duration=&speed=&seed=` runs one live replication on this node and streams packet events as Server-Sent Events (one JSON object per `data:` line; see `simulate.py --stream`). Limits: ρ ≤ 1.5, duration ≤ 3600, λ × speed ≤ 200 packets per second. A stream uses one of the node's simulation slots, so a busy node answers 503.
+
 
 | Method | Path      | Description |
 |--------|-----------|-------------|
@@ -211,10 +251,13 @@ set of nodes. These defaults limit exposure:
 ## Repository layout
 
 ```
-node/        cmd/node, internal/{api,batch,config,dispatch,peers,sim,stats,task,worker}, Dockerfile
-sim/         simulate.py, test_simulate.py, requirements*.txt
+node/        cmd/node, internal/{api,batch,config,dispatch,netbatch,peers,sim,stats,task,worker}, Dockerfile
+sim/         simulate.py (M/M/1), netsim.py (networks), tests, requirements*.txt
 config/      peers.yaml, peers.4.yaml, node.yaml
+gateway/     cmd/gateway, internal/{config,nodeclient,aggregate,store,runs,server,testnode}, webui/, Dockerfile
+web/         GUI (React + Vite): src/{api,pages,components,lib}, Dockerfile (mock preview)
+docs/        gateway-api.md, node-api-observed.md, node-api-gaps.md, assumptions.md, GUI task plan
 scripts/     demo.sh, kill-node-test.sh, kill-coordinator-test.sh
-docker-compose.yml, docker-compose.node4.yml, prd.md
+docker-compose.yml, docker-compose.node4.yml, docker-compose.web.yml, prd.md
 .archive/    pre-P2P coordinator/peer implementation (tarball, git-ignored)
 ```

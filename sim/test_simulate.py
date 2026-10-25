@@ -123,3 +123,83 @@ def test_cli_unstable_system_exits_nonzero_with_stderr():
     assert proc.returncode == 1
     assert proc.stdout == ""
     assert "rho" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# Streaming mode (live traffic view)
+# ---------------------------------------------------------------------------
+
+from simulate import stream_replication  # noqa: E402
+
+
+def _stream(seed=11, lam=0.8, mu=1.0, duration=300.0, speed=10.0) -> list[dict]:
+    events: list[dict] = []
+    stream_replication(seed, lam, mu, duration, speed, events.append, realtime=False)
+    return events
+
+
+def test_stream_event_sequence_is_consistent():
+    events = _stream()
+    assert events[0]["type"] == "meta" and events[0]["theory"] == {"rho": 0.8, "W": 5.0, "L": 4.0}
+    assert events[-1]["type"] == "done"
+    times = [e["t"] for e in events[1:]]
+    assert times == sorted(times), "events must be in time order"
+
+    seen: dict[int, list[str]] = {}
+    for e in events:
+        if e["type"] in ("arrival", "start", "depart"):
+            seen.setdefault(e["id"], []).append(e["type"])
+            assert e.get("in_system", 0) >= 0
+    for packet_id, kinds in seen.items():
+        assert kinds in (["arrival"], ["arrival", "start"], ["arrival", "start", "depart"]), (packet_id, kinds)
+
+    done = events[-1]
+    assert done["served"] == sum(1 for e in events if e["type"] == "depart")
+    assert done["arrived"] == sum(1 for e in events if e["type"] == "arrival")
+    assert done["in_system"] == done["arrived"] - done["served"]
+    assert any(e["type"] == "stats" for e in events)
+
+
+def test_stream_is_deterministic_and_fifo():
+    a, b = _stream(seed=5), _stream(seed=5)
+    assert a == b
+    starts = [e["id"] for e in a if e["type"] == "start"]
+    assert starts == sorted(starts), "a single FIFO server starts packets in arrival order"
+
+
+def test_stream_delay_matches_theory_over_a_long_run():
+    done = _stream(seed=3, duration=3600.0)[-1]
+    assert done["mean_delay"] == pytest.approx(5.0, rel=0.25)
+    assert done["utilization"] == pytest.approx(0.8, rel=0.1)
+
+
+def test_stream_allows_bounded_overload():
+    events = _stream(lam=1.2, mu=1.0, duration=200.0)
+    assert events[0]["theory"] is None
+    assert events[-1]["in_system"] > 10, "an overloaded queue keeps growing"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        dict(lam=2.0, mu=1.0),  # rho above the streaming bound
+        dict(duration=10_000.0),
+        dict(lam=0.9, speed=500.0),  # packet rate above the bound
+        dict(speed=0.0),
+    ],
+)
+def test_stream_rejects_invalid_parameters(kwargs):
+    with pytest.raises(ValueError):
+        _stream(**kwargs)
+
+
+def test_cli_stream_prints_event_lines():
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--stream", "--seed", "9", "--lam", "0.8", "--mu", "1.0",
+         "--sim-time", "20", "--speed", "200"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    lines = [json.loads(line) for line in proc.stdout.splitlines()]
+    assert lines[0]["type"] == "meta" and lines[-1]["type"] == "done"
+    assert lines[-1]["t"] == pytest.approx(20.0)

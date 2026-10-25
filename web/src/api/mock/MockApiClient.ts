@@ -1,10 +1,11 @@
-import { ApiError, type ApiClient } from "../client";
+import type { NetStreamEvent } from "../../lib/network";
+import { generateTraffic, type TrafficParams } from "../../lib/traffic";
+import { ApiError, type ApiClient, type TrafficHandler } from "../client";
 import type {
   ClusterNode,
   ClusterSnapshot,
   GatewayConfig,
   HealthResponse,
-  MetricComparison,
   MockScenario,
   NodeReport,
   NodeStatus,
@@ -12,141 +13,49 @@ import type {
   RunList,
   RunParameters,
   RunRecord,
-  TaskCounts,
 } from "../types";
+import { encodeRunId, isLost, mockReport, mockStatus, runState, toRecord, type MockRun } from "./mockRuns";
+
+const STORAGE_KEY = "p2p-sim-mock-runs";
+let runs: MockRun[] | null = null;
+
+// Mock runs persist for the browser session so a reload keeps Live/Report working.
+function store(): MockRun[] {
+  if (runs) return runs;
+  try {
+    const saved = sessionStorage.getItem(STORAGE_KEY);
+    runs = saved ? (JSON.parse(saved) as MockRun[]) : [];
+  } catch {
+    runs = [];
+  }
+  return runs;
+}
+
+function save() {
+  try {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(store()));
+  } catch {
+    // Storage unavailable: runs stay in memory only.
+  }
+}
+
+function findRun(runId: string): MockRun {
+  const run = store().find((item) => item.run_id === runId);
+  if (!run) throw new ApiError("Run not found.", 404);
+  return run;
+}
+
+function batchId(coordinator: string, now: Date): string {
+  const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "");
+  const suffix = Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0");
+  return `batch-${coordinator}-${stamp}-${suffix}`;
+}
 
 const basePeers = [
   { id: "node-1", url: "http://127.0.0.1:8081" },
   { id: "node-2", url: "http://127.0.0.1:8082" },
   { id: "node-3", url: "http://127.0.0.1:8083" },
 ];
-
-const DISTRIBUTED_MS = 10_000;
-const SERIAL_MS = 4_000;
-const LOSS_AFTER_MS = 4_000;
-const Z95 = 1.959963984540054;
-
-interface MockRun {
-  runId: string;
-  batchId: string;
-  coordinator: string;
-  params: RunParameters;
-  peers: string[];
-  scenario: MockScenario;
-  startedAt: number;
-  createdAt: string;
-}
-
-// Module-level so runs survive the per-render client instances.
-const mockRuns = new Map<string, MockRun>();
-let mockRunCount = 0;
-
-function findRun(runId: string): MockRun {
-  const run = mockRuns.get(runId);
-  if (!run) throw new ApiError("run not found", 404);
-  return run;
-}
-
-const elapsedMs = (run: MockRun) => Date.now() - run.startedAt;
-const isLost = (run: MockRun, elapsed: number) => run.scenario === "coordinator-loss" && elapsed >= LOSS_AFTER_MS;
-
-function counts(total: number, fraction: number, workers: number): TaskCounts {
-  const complete = Math.floor(total * Math.min(1, fraction));
-  const assigned = Math.min(workers, total - complete);
-  return { pending: total - complete - assigned, assigned, complete, failed: 0, failed_attempts: 0 };
-}
-
-function mockStatus(run: MockRun, elapsed: number): NodeStatus {
-  const reps = run.params.replications;
-  const distributed = counts(reps, elapsed / DISTRIBUTED_MS, run.peers.length);
-  const inDistributed = elapsed < DISTRIBUTED_MS;
-  const inSerial = !inDistributed && run.params.serial_baseline && elapsed < DISTRIBUTED_MS + SERIAL_MS;
-  const phase = inDistributed ? "distributed" : inSerial ? "serial_baseline" : "complete";
-  return {
-    batch_id: run.batchId,
-    coordinator: run.coordinator,
-    state: phase === "complete" ? "complete" : "running",
-    phase,
-    replications: reps,
-    ...distributed,
-    elapsed_seconds: Math.min(elapsed, DISTRIBUTED_MS + (run.params.serial_baseline ? SERIAL_MS : 0)) / 1000,
-    ...(run.params.serial_baseline && !inDistributed
-      ? { serial_baseline: counts(reps, (elapsed - DISTRIBUTED_MS) / SERIAL_MS, 1) }
-      : {}),
-  };
-}
-
-function metric(theory: number, n: number, relStdDev: number, bias: number, tolerance: number): MetricComparison | null {
-  if (n < 2) return null;
-  const mean = theory * (1 + bias);
-  const stddev = theory * relStdDev;
-  const half = (Z95 * stddev) / Math.sqrt(n);
-  const relError = Math.abs(mean - theory) / theory * 100;
-  return {
-    n,
-    mean,
-    stddev,
-    ci95_low: mean - half,
-    ci95_high: mean + half,
-    ci95_half_width: half,
-    theoretical: theory,
-    rel_error_pct: relError,
-    tolerance_pct: tolerance,
-    within_tolerance: relError <= tolerance,
-    theoretical_in_ci: theory >= mean - half && theory <= mean + half,
-  };
-}
-
-function mockReport(run: MockRun, status: NodeStatus, elapsed: number): NodeReport {
-  const { lambda, mu, sim_time, warmup_time, tolerance_pct, replications, base_seed, serial_baseline } = run.params;
-  const rho = lambda / mu;
-  const theory = { rho, L: rho / (1 - rho), W: 1 / (mu - lambda) };
-  const n = status.complete;
-  const W = metric(theory.W, n, 0.18, 0.012, tolerance_pct);
-  const L = metric(theory.L, n, 0.22, 0.015, tolerance_pct);
-  const distributedDone = status.phase !== "distributed";
-  const pass = Boolean(W?.within_tolerance && L?.within_tolerance);
-  const tasksPerPeer = Object.fromEntries(run.peers.map((peer, index) => [
-    peer,
-    Math.floor(n / run.peers.length) + (index < n % run.peers.length ? 1 : 0),
-  ]));
-  const distributedWall = Math.min(elapsed, DISTRIBUTED_MS) / 1000;
-  const serialDone = status.phase === "complete" && serial_baseline;
-  const serialWall = serial_baseline && distributedDone ? (serialDone ? 27.1 : (elapsed - DISTRIBUTED_MS) / 1000) : null;
-  return {
-    batch_id: run.batchId,
-    coordinator: run.coordinator,
-    state: status.state,
-    phase: status.phase,
-    verdict: !distributedDone ? "PENDING" : pass ? "PASS" : "FAIL",
-    verdict_detail: !distributedDone
-      ? "distributed phase still running; statistics are provisional"
-      : `W rel. error ${W?.rel_error_pct.toFixed(2)}%, L rel. error ${L?.rel_error_pct.toFixed(2)}% (tolerance ${tolerance_pct.toFixed(2)}%); theoretical W in CI: ${W?.theoretical_in_ci}, L in CI: ${L?.theoretical_in_ci}`,
-    params: { lambda, mu, sim_time, warmup_time },
-    replications_requested: replications,
-    base_seed,
-    seed_scheme: "seed = base_seed + task_index (task_index = 0..replications-1)",
-    tolerance_pct,
-    ci_method: "normal approximation: mean ± 1.96·s/√n (valid for n ≥ 30)",
-    tasks: { pending: status.pending, assigned: status.assigned, complete: status.complete, failed: status.failed, failed_attempts: status.failed_attempts },
-    tasks_per_peer: tasksPerPeer,
-    failed_tasks: [],
-    theoretical: theory,
-    mean_wait_time: W,
-    mean_queue_length: L,
-    utilization: metric(rho, n, 0.01, -0.002, tolerance_pct),
-    timing: {
-      distributed_wall_clock_seconds: distributedWall,
-      distributed_peers: run.peers.length,
-      sum_replication_runtime_seconds: n * 0.28,
-      ...(serial_baseline ? { serial_peer: run.coordinator } : {}),
-      serial_wall_clock_seconds: serialWall,
-      speedup: serialDone ? 27.1 / distributedWall : null,
-      ...(serialDone ? { serial_results_match_distributed: run.scenario !== "serial-mismatch" } : {}),
-      ...(serial_baseline && !serialDone && distributedDone ? { serial_note: "serial baseline in progress" } : {}),
-    },
-  };
-}
 
 export class MockApiClient implements ApiClient {
   constructor(private readonly scenario: MockScenario) {}
@@ -175,9 +84,14 @@ export class MockApiClient implements ApiClient {
     const peers = this.scenario === "node-4"
       ? [...basePeers, { id: "node-4", url: "http://127.0.0.1:8084" }]
       : basePeers;
+    const now = Date.now();
+    // Coordinators that died during a batch stay down while this scenario is selected.
+    const lostCoordinators = new Set(this.scenario === "coordinator-loss"
+      ? store().filter((run) => isLost(run, now)).map((run) => run.coordinator)
+      : []);
     const nodes: ClusterNode[] = peers.map((peer, index) => {
       const workerDown = this.scenario === "worker-failure" && peer.id === "node-2";
-      const coordinatorDown = this.scenario === "coordinator-loss" && peer.id === "node-1";
+      const coordinatorDown = (this.scenario === "coordinator-loss" && peer.id === "node-1") || lostCoordinators.has(peer.id);
       const healthy = !workerDown && !coordinatorDown;
       const observerId = this.scenario === "coordinator-loss" && peer.id === "node-1"
         ? null
@@ -191,7 +105,7 @@ export class MockApiClient implements ApiClient {
           observed.id,
           this.scenario === "worker-failure" && peer.id === "node-3" && observed.id === "node-2"
             ? false
-            : observed.id === "node-1" && this.scenario === "coordinator-loss"
+            : (observed.id === "node-1" && this.scenario === "coordinator-loss") || lostCoordinators.has(observed.id)
               ? false
               : true,
         ])),
@@ -202,65 +116,100 @@ export class MockApiClient implements ApiClient {
   }
 
   async createRun(coordinator: string, params: RunParameters): Promise<RunCreated> {
-    if (this.scenario === "busy") throw new ApiError("A batch is already running on this node.", 409);
     if (this.scenario === "validation-error") throw new ApiError("lambda must be less than mu.", 400);
-    mockRunCount += 1;
-    const peers = (this.scenario === "node-4" ? [...basePeers, { id: "node-4", url: "" }] : basePeers).map((peer) => peer.id);
+    const now = Date.now();
+    const busy = store().find((run) => run.coordinator === coordinator && runState(run, now) === "running");
+    if (busy || (this.scenario === "busy" && coordinator === "node-1")) {
+      throw new ApiError("A batch is already running on this node.", 409);
+    }
+    const config = await this.getConfig();
+    const created = new Date(now);
+    const id = batchId(coordinator, created);
+    // A resubmission of a lost batch (same seed and parameters) is allowed to finish.
+    const resubmission = store().some((run) =>
+      run.loses_coordinator && JSON.stringify(run.params) === JSON.stringify(params));
     const run: MockRun = {
-      runId: `mock-run-${mockRunCount}`,
-      batchId: `batch-${coordinator}-mock-${mockRunCount}`,
+      run_id: encodeRunId(coordinator, id),
+      batch_id: id,
       coordinator,
+      created_at: created.toISOString(),
+      started_ms: now,
       params,
-      peers,
       scenario: this.scenario,
-      startedAt: Date.now(),
-      createdAt: new Date().toISOString(),
+      peers: config.peers.map((peer) => peer.id),
+      loses_coordinator: this.scenario === "coordinator-loss" && !resubmission,
     };
-    mockRuns.set(run.runId, run);
+    store().push(run);
+    save();
     return {
-      run_id: run.runId,
-      batch_id: run.batchId,
+      run_id: run.run_id,
+      batch_id: run.batch_id,
       status: "started",
       coordinator,
       replications: params.replications,
       base_seed: params.base_seed,
-      peers: peers.length,
+      peers: run.peers.length,
     };
   }
 
-  async listRuns(_limit: number, _offset: number): Promise<RunList> {
-    return { runs: [], limit: _limit, offset: _offset, total: 0 };
+  async listRuns(limit: number, offset: number): Promise<RunList> {
+    const now = Date.now();
+    const newest = [...store()].sort((a, b) => b.started_ms - a.started_ms);
+    return {
+      runs: newest.slice(offset, offset + limit).map((run) => toRecord(run, now)),
+      limit,
+      offset,
+      total: newest.length,
+    };
   }
 
   async getRun(runId: string): Promise<RunRecord> {
-    const run = findRun(runId);
-    const elapsed = elapsedMs(run);
-    const lost = isLost(run, elapsed);
-    const status = mockStatus(run, lost ? LOSS_AFTER_MS : elapsed);
-    return {
-      run_id: run.runId,
-      batch_id: run.batchId,
-      coordinator: run.coordinator,
-      created_at: run.createdAt,
-      params: run.params,
-      state: lost ? "coordinator_lost" : status.state,
-      status,
-      report: status.state === "complete" ? mockReport(run, status, elapsed) : null,
-    };
+    return toRecord(findRun(runId), Date.now());
   }
 
   async getStatus(runId: string): Promise<NodeStatus> {
-    const run = findRun(runId);
-    const elapsed = elapsedMs(run);
-    if (isLost(run, elapsed)) throw new ApiError(`${run.coordinator} unreachable: connection refused`, 502);
-    return { ...mockStatus(run, elapsed), stale: false };
+    return mockStatus(findRun(runId), Date.now());
   }
 
   async getReport(runId: string): Promise<NodeReport> {
     const run = findRun(runId);
-    const elapsed = elapsedMs(run);
-    if (isLost(run, elapsed)) throw new ApiError("coordinator no longer holds this batch", 404);
-    return { ...mockReport(run, mockStatus(run, elapsed), elapsed), stale: false };
+    const now = Date.now();
+    if (isLost(run, now)) {
+      throw new ApiError("Coordinator unreachable and no final report was captured.", 502);
+    }
+    return mockReport(run, now);
+  }
+
+  /** Replays a browser-computed stream at the requested speed. */
+  openTraffic(params: TrafficParams, onEvent: TrafficHandler) {
+    if (this.scenario === "busy" && params.node === "node-1") {
+      onEvent({ type: "error", message: "node busy: concurrent task limit reached" });
+      return () => undefined;
+    }
+    const events = generateTraffic(params);
+    const started = performance.now();
+    let next = 0;
+    const timer = window.setInterval(() => {
+      const simNow = ((performance.now() - started) / 1000) * params.speed;
+      while (next < events.length) {
+        const event = events[next];
+        if ("t" in event && event.t > simNow) break;
+        onEvent(event);
+        next += 1;
+      }
+      if (next >= events.length) window.clearInterval(timer);
+    }, 40);
+    return () => window.clearInterval(timer);
+  }
+
+  // Network scenarios are simulated by netsim.py on the nodes; the mock has no simulator.
+  async createNetworkRun(): Promise<RunCreated> {
+    throw new ApiError("Network runs need the real nodes. Start the Docker stack and open the gateway (port 8090).", 501);
+  }
+
+  openNetworkTraffic(_node: string, _scenario: unknown, _speed: number, _seed: number, _start: number, onEvent: (event: NetStreamEvent) => void) {
+    window.setTimeout(() => onEvent({ type: "error", message: "Live network runs need the real nodes. Start the Docker stack and open the gateway (port 8090)." }), 0);
+    return () => undefined;
   }
 
   async getHealth(): Promise<HealthResponse> {

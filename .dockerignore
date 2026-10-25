@@ -5,3 +5,7 @@
 bin
 results
 *.md
+web/node_modules
+web/dist
+gateway/data
+gateway/gateway

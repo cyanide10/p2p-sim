@@ -18,7 +18,7 @@ COPY sim/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
  && useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin app
 # Code stays root-owned and read-only to the runtime user.
-COPY sim/simulate.py ./sim/simulate.py
+COPY sim/simulate.py sim/netsim.py ./sim/
 COPY --from=builder /node-bin /app/node-bin
 
 ENV PEERS_CONFIG=/app/config/peers.yaml \

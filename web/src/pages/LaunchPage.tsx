@@ -1,10 +1,10 @@
-import { ArrowRight, Dices, LoaderCircle, Play, Server, TriangleAlert } from "lucide-react";
+import { ArrowRight, Dices, LoaderCircle, Play, RotateCcw, Server, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, createApiClient } from "../api/client";
-import type { GatewayConfig, MockScenario, Peer, RunCreated, RunParameters } from "../api/types";
+import type { GatewayConfig, MockScenario, Peer, RunCreated, RunParameters, RunRecord } from "../api/types";
 import { randomSeed, validateRun, type RunField } from "../lib/validation";
 
-type NumericField = Exclude<keyof RunParameters, "serial_baseline">;
+type NumericField = Exclude<keyof RunParameters, "serial_baseline" | "kind" | "scenario">;
 type Draft = Record<NumericField, string> & { serial_baseline: boolean };
 
 const fieldConfig: Array<{
@@ -61,9 +61,12 @@ function nextHealthyPeer(peers: Peer[], selected: string, healthyIds: Set<string
 export function LaunchPage({
   scenario,
   onStarted,
+  resubmitRunId = null,
 }: {
   scenario: MockScenario;
   onStarted: (run: RunCreated) => void;
+  /** Prefill from this run (same parameters and base seed) on a different coordinator. */
+  resubmitRunId?: string | null;
 }) {
   const api = createApiClient(scenario);
   const [config, setConfig] = useState<GatewayConfig | null>(null);
@@ -74,17 +77,22 @@ export function LaunchPage({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [busyConflict, setBusyConflict] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [resubmitOf, setResubmitOf] = useState<RunRecord | null>(null);
 
   useEffect(() => {
     let active = true;
-    Promise.all([api.getConfig(), api.getCluster()]).then(([nextConfig, cluster]) => {
+    const previous = resubmitRunId ? api.getRun(resubmitRunId) : Promise.resolve(null);
+    Promise.all([api.getConfig(), api.getCluster(), previous]).then(([nextConfig, cluster, previousRun]) => {
       if (!active) return;
       setConfig(nextConfig);
+      setResubmitOf(previousRun);
       const nextHealthyIds = new Set(cluster.nodes.filter((node) => node.healthy).map((node) => node.id));
       setHealthyIds(nextHealthyIds);
-      const initialCoordinator = cluster.nodes.find((node) => node.healthy)?.id ?? nextConfig.peers[0]?.id ?? "";
+      // A resubmission avoids the original coordinator, which is presumed lost.
+      const candidates = cluster.nodes.filter((node) => node.healthy && node.id !== previousRun?.coordinator);
+      const initialCoordinator = candidates[0]?.id ?? cluster.nodes.find((node) => node.healthy)?.id ?? nextConfig.peers[0]?.id ?? "";
       setCoordinator(initialCoordinator);
-      const params: RunParameters = {
+      const params: RunParameters = previousRun ? { ...previousRun.params } : {
         ...nextConfig.defaults,
         base_seed: nextConfig.defaults.base_seed ?? randomSeed(nextConfig.defaults.replications),
       };
@@ -93,7 +101,7 @@ export function LaunchPage({
       if (active) setLoadError(cause instanceof Error ? cause.message : "Unable to load launch settings.");
     });
     return () => { active = false; };
-  }, [scenario]);
+  }, [scenario, resubmitRunId]);
 
   const params = useMemo(() => draft ? toParams(draft) : null, [draft]);
   const validation = useMemo(() => params ? validateRun(params) : null, [params]);
@@ -149,6 +157,11 @@ export function LaunchPage({
         </div>
       </div>
 
+      {resubmitOf && (
+        <div className="notice notice-info" role="status">
+          <RotateCcw size={15} /> Resubmitting batch {resubmitOf.batch_id} from {resubmitOf.coordinator} with the same parameters and base seed {resubmitOf.params.base_seed}. The same seed reproduces the same statistics.
+        </div>
+      )}
       {submitError && <div className={`notice ${busyConflict ? "notice-warning" : "notice-error"}`} role="alert">{submitError}</div>}
       {busyConflict && alternatePeer && (
         <div className="retry-strip">

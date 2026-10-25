@@ -11,6 +11,14 @@ CLI contract (the Go <-> Python interface, keep it exact):
   * stderr: all diagnostics / logging / error messages.
   * exit 0 on success; exit 1 on invalid parameters or internal error.
 
+Streaming mode (--stream, used for the live traffic view):
+  * runs one replication paced to wall-clock time (--speed simulated time
+    units per second) and writes one JSON event per line to stdout as it
+    happens: a "meta" line first, then "arrival" / "start" / "depart" packet
+    events and periodic "stats" lines, and a final "done" line.
+  * --sim-time is the simulated duration; --warmup-time is ignored.
+  * same exit codes; invalid parameters print nothing on stdout.
+
 Reported metrics (all measured over the window [warmup_time, sim_time]):
   * mean_wait_time    -- mean time in system (queueing + service) of customers
                          that arrived after warm-up and departed before sim_time.
@@ -34,6 +42,7 @@ import time
 from typing import Callable
 
 import simpy
+import simpy.rt
 
 log = logging.getLogger("simulate")
 
@@ -201,6 +210,159 @@ def run_replication(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Streaming mode: one replication, paced in real time, emitting packet events.
+# ---------------------------------------------------------------------------
+
+#: Overloaded queues (rho >= 1) are allowed when streaming, up to this bound,
+#: so the live view can show a queue that keeps growing. Duration is bounded.
+MAX_STREAM_RHO = 1.5
+MAX_STREAM_DURATION = 3600.0
+#: Upper bound on packet arrivals per wall-clock second (lam * speed).
+MAX_STREAM_PACKET_RATE = 200.0
+
+Emit = Callable[[dict], None]
+
+
+def validate_stream_params(lam: float, mu: float, duration: float, speed: float) -> None:
+    for name, value in {"lam": lam, "mu": mu, "duration": duration, "speed": speed}.items():
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be a positive finite number, got {value}")
+    if lam / mu > MAX_STREAM_RHO:
+        raise ValueError(f"rho = lam/mu = {lam / mu:.4f} exceeds {MAX_STREAM_RHO} for streaming")
+    if duration > MAX_STREAM_DURATION:
+        raise ValueError(f"duration must be <= {MAX_STREAM_DURATION}, got {duration}")
+    if lam * speed > MAX_STREAM_PACKET_RATE:
+        raise ValueError(
+            f"lam * speed = {lam * speed:.1f} packets per second exceeds {MAX_STREAM_PACKET_RATE}"
+        )
+
+
+def _r(value: float) -> float:
+    return round(value, 4)
+
+
+def stream_replication(
+    seed: int,
+    lam: float,
+    mu: float,
+    duration: float,
+    speed: float,
+    emit: Emit,
+    realtime: bool = True,
+    stats_every: float | None = None,
+) -> dict:
+    """
+    Runs one M/M/1 replication and reports every packet as it happens.
+    With realtime=True the clock advances `speed` simulated time units per
+    wall-clock second. Packet events depend only on the seed and rates.
+    Returns the final summary (also emitted in the "done" event).
+    """
+    validate_stream_params(lam, mu, duration, speed)
+    rho = lam / mu
+    stats_every = stats_every or speed * 0.25  # about four per wall-clock second
+
+    rng = random.Random(seed)
+    next_interarrival = exponential(rng, lam)
+    next_service = exponential(rng, mu)
+    env = (
+        simpy.rt.RealtimeEnvironment(factor=1.0 / speed, strict=False)
+        if realtime
+        else simpy.Environment()
+    )
+    server = simpy.Resource(env, capacity=1)
+    monitor = Monitor(env, warmup_time=0.0, capacity=1)
+    counts = {"arrived": 0}
+
+    def stats() -> dict:
+        monitor._advance()
+        now = env.now
+        return {
+            "t": _r(now),
+            "arrived": counts["arrived"],
+            "served": monitor.served,
+            "in_system": monitor.in_system,
+            "mean_delay": _r(monitor.total_time_in_system / monitor.served) if monitor.served else None,
+            "mean_in_system": _r(monitor.area_in_system / now) if now > 0 else 0.0,
+            "utilization": _r(monitor.area_busy / now) if now > 0 else 0.0,
+            "throughput": _r(monitor.served / now) if now > 0 else 0.0,
+        }
+
+    def packet(packet_id: int, service_time: float):
+        arrived = env.now
+        monitor.arrive()
+        emit({"type": "arrival", "t": _r(arrived), "id": packet_id, "in_system": monitor.in_system})
+        with server.request() as req:
+            yield req
+            emit({"type": "start", "t": _r(env.now), "id": packet_id, "wait": _r(env.now - arrived)})
+            yield env.timeout(service_time)
+        monitor.depart(arrived)
+        emit({
+            "type": "depart",
+            "t": _r(env.now),
+            "id": packet_id,
+            "delay": _r(env.now - arrived),
+            "in_system": monitor.in_system,
+        })
+
+    def source():
+        packet_id = 0
+        while True:
+            yield env.timeout(next_interarrival())
+            packet_id += 1
+            counts["arrived"] += 1
+            env.process(packet(packet_id, next_service()))
+
+    def reporter():
+        while True:
+            yield env.timeout(stats_every)
+            emit({"type": "stats", **stats()})
+
+    theory = {"rho": _r(rho), "W": _r(1 / (mu - lam)), "L": _r(rho / (1 - rho))} if rho < 1 else None
+    emit({
+        "type": "meta",
+        "seed": seed,
+        "lambda": lam,
+        "mu": mu,
+        "duration": duration,
+        "speed": speed,
+        "rho": _r(rho),
+        "theory": theory,
+    })
+    env.process(source())
+    env.process(reporter())
+    env.run(until=duration)
+    summary = stats()
+    emit({"type": "done", **summary})
+    return summary
+
+
+def _stream_main(args: argparse.Namespace) -> int:
+    def emit(event: dict) -> None:
+        sys.stdout.write(json.dumps(event, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+
+    try:
+        stream_replication(
+            seed=args.seed, lam=args.lam, mu=args.mu,
+            duration=args.sim_time, speed=args.speed, emit=emit,
+        )
+    except ValueError as exc:
+        print(f"invalid parameters: {exc}", file=sys.stderr)
+        return 1
+    except BrokenPipeError:
+        # The viewer went away; stop quietly.
+        try:
+            sys.stdout = open(os.devnull, "w")
+        except OSError:
+            pass
+        return 0
+    except Exception as exc:  # noqa: BLE001 - any failure must map to exit 1
+        print(f"simulation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one SimPy queue replication.")
     parser.add_argument("--seed", type=int, required=True)
@@ -210,6 +372,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--warmup-time", type=float, default=0.0)
     parser.add_argument("--service", choices=sorted(SERVICE_DISTRIBUTIONS), default="exp")
     parser.add_argument("--arrivals", choices=sorted(ARRIVAL_PROCESSES), default="poisson")
+    parser.add_argument("--stream", action="store_true", help="emit live packet events (see module docstring)")
+    parser.add_argument("--speed", type=float, default=10.0, help="streaming: simulated time units per second")
     return parser.parse_args(argv)
 
 
@@ -220,6 +384,8 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     args = _parse_args(argv)
+    if args.stream:
+        return _stream_main(args)
     try:
         result = run_replication(
             seed=args.seed,

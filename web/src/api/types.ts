@@ -4,6 +4,9 @@ export interface Peer {
 }
 
 export interface RunParameters {
+  /** "network" for network-scenario runs; absent for M/M/1. */
+  kind?: "network";
+  scenario?: import("../lib/network").Scenario;
   replications: number;
   lambda: number;
   mu: number;
@@ -57,6 +60,14 @@ export interface TaskCounts {
   failed_attempts: number;
 }
 
+/** Per-replication detail. Real nodes do not expose this yet (docs/node-api-gaps.md). */
+export interface TaskDetail {
+  task_id: string;
+  state: "pending" | "assigned" | "complete" | "failed";
+  peer_id?: string;
+  attempts: number;
+}
+
 export interface NodeStatus {
   batch_id: string;
   coordinator: string;
@@ -71,6 +82,7 @@ export interface NodeStatus {
   elapsed_seconds: number;
   serial_baseline?: TaskCounts;
   stale?: boolean;
+  tasks?: TaskDetail[];
 }
 
 export interface MetricComparison {
@@ -129,12 +141,48 @@ export interface NodeReport {
     serial_note?: string;
   };
   stale?: boolean;
-  task_details?: Array<{
-    task_id: string;
-    state: "pending" | "assigned" | "complete" | "failed";
-    peer_id?: string;
-    attempts: number;
-  }>;
+  task_details?: TaskDetail[];
+}
+
+export interface Estimate {
+  n: number;
+  mean: number;
+  stddev: number;
+  ci95_low: number;
+  ci95_high: number;
+  ci95_half_width: number;
+}
+
+export interface Band {
+  mean: Array<number | null>;
+  low: Array<number | null>;
+  high: Array<number | null>;
+}
+
+/** GET /report for a network run (node/internal/netbatch). */
+export interface NetworkReport {
+  kind: "network";
+  batch_id: string;
+  coordinator: string;
+  state: "running" | "complete";
+  phase: string;
+  verdict: "PENDING" | "COMPLETE" | "FAIL";
+  verdict_detail: string;
+  replications_requested: number;
+  base_seed: number;
+  seed_scheme: string;
+  ci_method: string;
+  scenario: import("../lib/network").Scenario;
+  tasks: TaskCounts;
+  tasks_per_peer: Record<string, number>;
+  failed_tasks: Array<{ task_id: string; seed: number; attempts: number; error: string }>;
+  flows: Record<string, Record<string, Estimate | null>>;
+  links: Record<string, Record<string, Estimate | null>>;
+  routers: Record<string, Record<string, Estimate | null>>;
+  totals: Record<string, Estimate | null>;
+  series: { bin_width: number; delivered_rate: Band; dropped_rate: Band; mean_delay: Band; flows: Record<string, Band> };
+  timing: { distributed_wall_clock_seconds: number; distributed_peers: number; sum_replication_runtime_seconds: number; parallelism: number | null };
+  stale?: boolean;
 }
 
 export interface RunRecord {

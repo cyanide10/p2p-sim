@@ -34,15 +34,28 @@ type CommandRunner interface {
 // these limits is dropped so a misbehaving script cannot exhaust node memory
 // (and oversized stderr is not echoed back to callers).
 const (
-	maxStdoutBytes = 64 << 10
+	maxStdoutBytes = 1 << 20 // network metrics can be tens of KiB
 	maxStderrBytes = 4 << 10
 )
+
+// InputCommandRunner is a CommandRunner that can also feed stdin, used for
+// network scenarios (JSON is passed on stdin, never as arguments).
+type InputCommandRunner interface {
+	RunInput(ctx context.Context, stdin []byte, name string, args ...string) (stdout, stderr []byte, err error)
+}
 
 // ExecCommandRunner is the production CommandRunner backed by os/exec.
 type ExecCommandRunner struct{}
 
-func (ExecCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+func (r ExecCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+	return r.RunInput(ctx, nil, name, args...)
+}
+
+func (ExecCommandRunner) RunInput(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
 	stdout := &cappedBuffer{max: maxStdoutBytes}
 	stderr := &cappedBuffer{max: maxStderrBytes}
 	cmd.Stdout = stdout
@@ -87,10 +100,11 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 
 // SimRunner runs one simulation replication per task.
 type SimRunner struct {
-	Cmd     CommandRunner
-	Python  string        // interpreter, e.g. "python3"
-	Script  string        // path to simulate.py
-	Timeout time.Duration // per-subprocess limit; keep below the coordinator's request timeout
+	Cmd       CommandRunner
+	Python    string        // interpreter, e.g. "python3"
+	Script    string        // path to simulate.py
+	NetScript string        // path to netsim.py (network tasks)
+	Timeout   time.Duration // per-subprocess limit; keep below the coordinator's request timeout
 }
 
 // Args builds the simulate.py argument list (script path first) for a task.
@@ -117,6 +131,9 @@ func (r *SimRunner) Run(ctx context.Context, t task.Task) (task.Result, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
+	if len(t.Network) > 0 {
+		return r.runNetwork(ctx, t)
+	}
 
 	stdout, stderr, err := r.Cmd.Run(ctx, r.Python, Args(r.Script, t)...)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -146,6 +163,40 @@ func (r *SimRunner) Run(ctx context.Context, t task.Task) (task.Result, error) {
 		PacketsServed:   out.PacketsServed,
 		RuntimeSeconds:  out.RuntimeSeconds,
 	}, nil
+}
+
+// runNetwork simulates the task's network scenario with netsim.py.
+func (r *SimRunner) runNetwork(ctx context.Context, t task.Task) (task.Result, error) {
+	runner, ok := r.Cmd.(InputCommandRunner)
+	if !ok || r.NetScript == "" {
+		return task.Result{}, errors.New("runner misconfigured: network simulation is not available")
+	}
+	stdout, stderr, err := runner.RunInput(ctx, []byte(t.Network), r.Python, r.NetScript, "--seed", strconv.FormatInt(t.Seed, 10))
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return task.Result{}, fmt.Errorf("network simulation timed out after %s", r.Timeout)
+	}
+	if err != nil {
+		if detail := strings.TrimSpace(string(stderr)); detail != "" {
+			return task.Result{}, fmt.Errorf("network simulation failed (%v): %s", err, detail)
+		}
+		return task.Result{}, fmt.Errorf("network simulation failed: %v", err)
+	}
+	line := bytes.TrimSpace(stdout)
+	if len(line) == 0 || bytes.ContainsRune(line, '\n') {
+		return task.Result{}, errors.New("network simulation stdout must be a single JSON line")
+	}
+	var out struct {
+		Seed           int64           `json:"seed"`
+		RuntimeSeconds float64         `json:"runtime_seconds"`
+		Metrics        json.RawMessage `json:"metrics"`
+	}
+	if err := json.Unmarshal(line, &out); err != nil {
+		return task.Result{}, fmt.Errorf("invalid JSON from network simulation: %w", err)
+	}
+	if out.Seed != t.Seed || len(out.Metrics) == 0 {
+		return task.Result{}, fmt.Errorf("network simulation returned seed %d without metrics (expected seed %d)", out.Seed, t.Seed)
+	}
+	return task.Result{TaskID: t.TaskID, Seed: t.Seed, RuntimeSeconds: out.RuntimeSeconds, Network: task.RawJSON(out.Metrics)}, nil
 }
 
 // Output is the JSON object printed by simulate.py.

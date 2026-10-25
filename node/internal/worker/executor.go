@@ -35,6 +35,18 @@ func New(sim Simulator, nodeID string, maxConcurrent int, logger *slog.Logger) *
 	return &Executor{sim: sim, nodeID: nodeID, slots: make(chan struct{}, maxConcurrent), logger: logger}
 }
 
+// Acquire takes one simulation slot without queueing, for work other than a
+// task (a live traffic stream). It returns task.ErrBusy when every slot is
+// taken; otherwise the caller must call release when done.
+func (e *Executor) Acquire() (release func(), err error) {
+	select {
+	case e.slots <- struct{}{}:
+		return func() { <-e.slots }, nil
+	default:
+		return nil, task.ErrBusy
+	}
+}
+
 // Execute runs t. It never queues: when every slot is taken it returns
 // task.ErrBusy immediately so the caller can place the task elsewhere.
 func (e *Executor) Execute(ctx context.Context, t task.Task) (task.Result, error) {

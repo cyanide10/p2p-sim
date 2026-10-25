@@ -1,0 +1,4 @@
+webui/dist/*
+!webui/dist/.placeholder
+/gateway
+data/

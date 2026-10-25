@@ -1,338 +1,322 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/p2p-sim/gateway/internal/config"
 	"github.com/p2p-sim/gateway/internal/nodeclient"
 	"github.com/p2p-sim/gateway/internal/runs"
+	"github.com/p2p-sim/gateway/internal/store"
 	"github.com/p2p-sim/gateway/internal/testnode"
 )
 
-type gateway struct {
-	url   string
-	store *runs.Store
+var bundle = fstest.MapFS{
+	"index.html":       {Data: []byte("<!doctype html><title>p2p-sim</title>")},
+	"assets/app-1.js":  {Data: []byte("console.log(1)")},
+	"assets/style.css": {Data: []byte("body{}")},
 }
 
-type opts struct {
-	timeout      time.Duration
-	pollInterval time.Duration
+type env struct {
+	nodes   []*testnode.Node
+	handler http.Handler
+	runs    *runs.Manager
+	store   *store.Store
 }
 
-func newGateway(t *testing.T, o opts, nodes ...*testnode.Node) *gateway {
+func setup(t *testing.T, token string, static fstest.MapFS) *env {
 	t.Helper()
-	if o.timeout == 0 {
-		o.timeout = time.Second
-	}
-	if o.pollInterval == 0 {
-		o.pollInterval = 5 * time.Millisecond
-	}
-	peers := testnode.Peers(nodes...)
-	urls := map[string]string{}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	nodes, peers := testnode.Pool(t, 3)
+	content := "peers:\n"
 	for _, p := range peers {
-		urls[p.ID] = p.URL
+		content += "  - id: " + p.ID + "\n    url: " + p.URL + "\n"
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	client := nodeclient.New(o.timeout)
-	store := runs.NewStore(10)
-	tracker := runs.NewTracker(ctx, store, client, urls, o.pollInterval, 5, logger)
-	srv := httptest.NewServer(New(Deps{
-		Peers: peers, Defaults: config.BuiltinDefaults(), Client: client,
-		Store: store, Tracker: tracker, Logger: logger, Version: "test",
-	}))
-	t.Cleanup(func() {
-		srv.Close()
-		cancel()
-		tracker.Wait()
-	})
-	return &gateway{url: srv.URL, store: store}
-}
-
-func (g *gateway) do(t *testing.T, method, path, body string) (int, map[string]any) {
-	t.Helper()
-	req, _ := http.NewRequest(method, g.url+path, strings.NewReader(body))
-	resp, err := http.DefaultClient.Do(req)
+	path := filepath.Join(t.TempDir(), "peers.yaml")
+	os.WriteFile(path, []byte(content), 0o600)
+	src, err := config.NewPeerSource(path, log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	var out map[string]any
-	data, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("%s %s: non-JSON body %q", method, path, data)
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
 	}
-	return resp.StatusCode, out
+	t.Cleanup(func() { db.Close() })
+	client := nodeclient.New(300 * time.Millisecond)
+	manager := runs.New(runs.Options{Store: db, Nodes: client, Peers: src, Defaults: config.BuiltinDefaults(),
+		PollInterval: 5 * time.Millisecond, LostAfter: 3, HistoryLimit: 100, MaxTrackers: 8, Log: log})
+	t.Cleanup(func() { manager.Shutdown(context.Background()) })
+	h := Handler(Options{Peers: src, Nodes: client, Runs: manager, Defaults: config.BuiltinDefaults(),
+		Token: token, Version: "test", Static: static, Log: log})
+	return &env{nodes: nodes, handler: h, runs: manager, store: db}
 }
 
-func (g *gateway) start(t *testing.T, body string) string {
-	t.Helper()
-	code, out := g.do(t, http.MethodPost, "/api/runs", body)
-	if code != http.StatusAccepted {
-		t.Fatalf("start: %d %v", code, out)
+func (e *env) do(method, target, body string, header ...string) *httptest.ResponseRecorder {
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
 	}
-	return out["run_id"].(string)
+	req := httptest.NewRequest(method, target, reader)
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Set(header[i], header[i+1])
+	}
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, req)
+	return rec
 }
 
-func (g *gateway) waitState(t *testing.T, id string, want runs.State) runs.Record {
+func decode(t *testing.T, rec *httptest.ResponseRecorder, dst any) {
 	t.Helper()
+	if err := json.Unmarshal(rec.Body.Bytes(), dst); err != nil {
+		t.Fatalf("decode %q: %v", rec.Body.String(), err)
+	}
+}
+
+func TestConfigClusterHealthz(t *testing.T) {
+	e := setup(t, "", bundle)
+	if rec := e.do("GET", "/healthz", ""); rec.Code != 200 {
+		t.Fatalf("healthz %d", rec.Code)
+	}
+	var cfg struct {
+		Defaults config.RunDefaults
+		Peers    []config.Peer
+		Features map[string]bool
+	}
+	decode(t, e.do("GET", "/api/config", ""), &cfg)
+	if len(cfg.Peers) != 3 || cfg.Defaults.Replications != 100 || cfg.Features["task_grid"] {
+		t.Fatalf("config %+v", cfg)
+	}
+	e.nodes[2].SetDown(true)
+	var cluster struct {
+		Nodes []struct {
+			ID      string
+			Healthy bool
+		}
+	}
+	rec := e.do("GET", "/api/cluster", "")
+	decode(t, rec, &cluster)
+	if rec.Code != 200 || len(cluster.Nodes) != 3 || !cluster.Nodes[0].Healthy || cluster.Nodes[2].Healthy {
+		t.Fatalf("cluster %d %+v", rec.Code, cluster)
+	}
+}
+
+func TestRunLifecycleOverHTTP(t *testing.T) {
+	e := setup(t, "", bundle)
+	rec := e.do("POST", "/api/runs", `{"coordinator":"node-1","replications":30,"base_seed":7}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("create %d %s", rec.Code, rec.Body)
+	}
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	decode(t, rec, &created)
 	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if r, _ := g.store.Get(id); r.State == want {
-			return r
+	for {
+		var run struct{ State string }
+		decode(t, e.do("GET", "/api/runs/"+created.RunID, ""), &run)
+		if run.State == "complete" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run state %q", run.State)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	r, _ := g.store.Get(id)
-	t.Fatalf("state %q, want %q", r.State, want)
-	return r
-}
-
-func TestHealthzAndConfig(t *testing.T) {
-	n := testnode.New("node-1")
-	defer n.Close()
-	g := newGateway(t, opts{}, n)
-
-	if code, out := g.do(t, http.MethodGet, "/healthz", ""); code != 200 || out["status"] != "ok" {
-		t.Fatalf("healthz: %d %v", code, out)
+	var report struct {
+		Verdict string
+		Stale   *bool
 	}
-	code, out := g.do(t, http.MethodGet, "/api/config", "")
-	defaults := out["defaults"].(map[string]any)
-	if code != 200 || defaults["replications"] != 100.0 || out["gateway_version"] != "test" {
-		t.Fatalf("config: %d %v", code, out)
+	decode(t, e.do("GET", "/api/runs/"+created.RunID+"/report", ""), &report)
+	if report.Verdict != "PASS" || report.Stale == nil || *report.Stale {
+		t.Fatalf("report %+v", report)
 	}
-	if _, has := defaults["base_seed"]; has {
-		t.Fatal("defaults must not include base_seed")
+	var list struct {
+		Runs  []json.RawMessage
+		Total int
+		Limit int
 	}
-	if peers := out["peers"].([]any); len(peers) != 1 {
-		t.Fatalf("peers: %v", peers)
+	decode(t, e.do("GET", "/api/runs?limit=500", ""), &list)
+	if list.Total != 1 || len(list.Runs) != 1 || list.Limit != maxListLimit {
+		t.Fatalf("list %+v", list)
 	}
 }
 
-func TestCluster(t *testing.T) {
-	a, b := testnode.New("node-1"), testnode.New("node-2")
-	defer a.Close()
-	g := newGateway(t, opts{}, a, b)
-	b.Close()
-	code, out := g.do(t, http.MethodGet, "/api/cluster", "")
-	nodes := out["nodes"].([]any)
-	if code != 200 || len(nodes) != 2 || nodes[1].(map[string]any)["healthy"] != false {
-		t.Fatalf("cluster: %d %v", code, out)
+func TestErrorMapping(t *testing.T) {
+	e := setup(t, "", bundle)
+	e.nodes[0].SetBusy(true)
+	e.nodes[1].SetDown(true)
+	e.nodes[2].SetDelay(time.Second)
+	cases := []struct {
+		name, method, target, body string
+		want                       int
+		contains                   string
+	}{
+		{"busy passthrough", "POST", "/api/runs", `{"coordinator":"node-1"}`, 409, "batch-existing"},
+		{"unreachable", "POST", "/api/runs", `{"coordinator":"node-2"}`, 502, "unreachable"},
+		{"timeout", "POST", "/api/runs", `{"coordinator":"node-3"}`, 504, "timed out"},
+		{"validation", "POST", "/api/runs", `{"coordinator":"node-1","lambda":2}`, 400, "lambda"},
+		{"unknown field", "POST", "/api/runs", `{"coordinator":"node-1","lamda":0.5}`, 400, "unknown field"},
+		{"trailing data", "POST", "/api/runs", `{"coordinator":"node-1"} {}`, 400, "unexpected data"},
+		{"body too large", "POST", "/api/runs", `{"coordinator":"` + strings.Repeat("x", 1<<20) + `"}`, 413, "1 MiB"},
+		{"unknown run", "GET", "/api/runs/nope", "", 404, "not found"},
+		{"unknown run status", "GET", "/api/runs/nope/status", "", 404, "not found"},
+		{"bad limit", "GET", "/api/runs?limit=-1", "", 400, "limit"},
+		{"bad offset", "GET", "/api/runs?offset=x", "", 400, "offset"},
+		{"unknown endpoint", "GET", "/api/nope", "", 404, "no such"},
+		{"wrong method", "DELETE", "/api/runs", "", 405, "method"},
 	}
-}
-
-func TestRunToReport(t *testing.T) {
-	n := testnode.New("node-1")
-	defer n.Close()
-	n.Update(func(n *testnode.Node) { n.CompleteAfter = 3 })
-	g := newGateway(t, opts{}, n)
-
-	id := g.start(t, `{"coordinator":"node-1","replications":40,"lambda":0.5,"base_seed":7}`)
-	coord, batch, err := runs.DecodeID(id)
-	if err != nil || coord != "node-1" || batch != "batch-node-1-1" {
-		t.Fatalf("run id %q decodes to %q %q %v", id, coord, batch, err)
-	}
-
-	var sent map[string]any
-	_ = json.Unmarshal(n.RunBodies()[0], &sent)
-	if sent["lambda"] != 0.5 || sent["mu"] != 1.0 || sent["base_seed"] != 7.0 || sent["serial_baseline"] != true {
-		t.Fatalf("forwarded body: %v", sent)
-	}
-
-	rec := g.waitState(t, id, runs.Complete)
-	if rec.Params.BaseSeed != 7 || rec.Params.Replications != 40 || rec.Report == nil {
-		t.Fatalf("record: %+v", rec)
-	}
-
-	code, out := g.do(t, http.MethodGet, "/api/runs/"+id+"/report", "")
-	if code != 200 || out["verdict"] != "PASS" || out["stale"] != false {
-		t.Fatalf("report: %d %v", code, out)
-	}
-	code, out = g.do(t, http.MethodGet, "/api/runs/"+id, "")
-	if code != 200 || out["state"] != "complete" || out["report"] == nil {
-		t.Fatalf("record: %d %v", code, out)
-	}
-}
-
-func TestOmittedSeedUsesNodeChoice(t *testing.T) {
-	n := testnode.New("node-1")
-	defer n.Close()
-	g := newGateway(t, opts{}, n)
-	id := g.start(t, `{"coordinator":"node-1"}`)
-	if bytes.Contains(n.RunBodies()[0], []byte("base_seed")) {
-		t.Fatalf("seed forwarded: %s", n.RunBodies()[0])
-	}
-	if r, _ := g.store.Get(id); r.Params.BaseSeed != 1761300000000 {
-		t.Fatalf("stored seed %d", r.Params.BaseSeed)
-	}
-}
-
-func TestRunRequestErrors(t *testing.T) {
-	n := testnode.New("node-1")
-	defer n.Close()
-	g := newGateway(t, opts{}, n)
-
-	cases := map[string]string{
-		"invalid params":      `{"coordinator":"node-1","lambda":2}`,
-		"missing coordinator": `{"replications":10}`,
-		"unknown coordinator": `{"coordinator":"node-9"}`,
-		"unknown field":       `{"coordinator":"node-1","color":"blue"}`,
-		"malformed":           `{"coordinator":`,
-		"too large":           `{"coordinator":"node-1","x":"` + strings.Repeat("a", 2<<20) + `"}`,
-	}
-	for name, body := range cases {
-		t.Run(name, func(t *testing.T) {
-			code, out := g.do(t, http.MethodPost, "/api/runs", body)
-			if code != http.StatusBadRequest || out["error"] == "" {
-				t.Fatalf("%d %v", code, out)
-			}
-		})
-	}
-	if len(n.RunBodies()) != 0 {
-		t.Fatal("invalid requests must not reach the node")
-	}
-}
-
-func TestConflictPassthrough(t *testing.T) {
-	n := testnode.New("node-1")
-	defer n.Close()
-	n.Update(func(n *testnode.Node) { n.RunStatus = http.StatusConflict })
-	g := newGateway(t, opts{}, n)
-	code, out := g.do(t, http.MethodPost, "/api/runs", `{"coordinator":"node-1"}`)
-	if code != http.StatusConflict || out["error"] != "a batch is already running on this node" {
-		t.Fatalf("%d %v", code, out)
-	}
-	if _, has := out["batch_id"]; !has {
-		t.Fatalf("node body not passed through: %v", out)
-	}
-}
-
-func TestNodeDownAndSlow(t *testing.T) {
-	down := testnode.New("node-1")
-	slow := testnode.New("node-2")
-	defer slow.Close()
-	slow.Update(func(n *testnode.Node) { n.Delay = time.Second })
-	g := newGateway(t, opts{timeout: 50 * time.Millisecond}, down, slow)
-	down.Close()
-
-	if code, _ := g.do(t, http.MethodPost, "/api/runs", `{"coordinator":"node-1"}`); code != http.StatusBadGateway {
-		t.Fatalf("down node: %d", code)
-	}
-	if code, _ := g.do(t, http.MethodPost, "/api/runs", `{"coordinator":"node-2"}`); code != http.StatusGatewayTimeout {
-		t.Fatalf("slow node: %d", code)
-	}
-}
-
-func TestStatusFallsBackToStoredCopy(t *testing.T) {
-	n := testnode.New("node-1")
-	n.Update(func(n *testnode.Node) { n.CompleteAfter = 1_000_000 })
-	g := newGateway(t, opts{pollInterval: time.Hour}, n)
-	id := g.start(t, `{"coordinator":"node-1"}`)
-
-	code, out := g.do(t, http.MethodGet, "/api/runs/"+id+"/status", "")
-	if code != 200 || out["stale"] != false || out["state"] != "running" {
-		t.Fatalf("live status: %d %v", code, out)
-	}
-	n.Close()
-	code, out = g.do(t, http.MethodGet, "/api/runs/"+id+"/status", "")
-	if code != 200 || out["stale"] != true || out["state"] != "running" {
-		t.Fatalf("stale status: %d %v", code, out)
-	}
-}
-
-func TestReportFallbackAfterNodeForgets(t *testing.T) {
-	n := testnode.New("node-1")
-	defer n.Close()
-	g := newGateway(t, opts{}, n)
-	id := g.start(t, `{"coordinator":"node-1"}`)
-	g.waitState(t, id, runs.Complete)
-
-	n.Update(func(n *testnode.Node) { n.Lost = true })
-	code, out := g.do(t, http.MethodGet, "/api/runs/"+id+"/report", "")
-	if code != 200 || out["stale"] != true || out["verdict"] != "PASS" {
-		t.Fatalf("%d %v", code, out)
-	}
-}
-
-func TestNoStoredCopyAfterNodeForgets(t *testing.T) {
-	n := testnode.New("node-1")
-	defer n.Close()
-	n.Update(func(n *testnode.Node) { n.CompleteAfter = 1_000_000 })
-	g := newGateway(t, opts{pollInterval: time.Hour}, n)
-	id := g.start(t, `{"coordinator":"node-1"}`)
-	g.waitState(t, id, runs.Running)
-	n.Update(func(n *testnode.Node) { n.Lost = true })
-
-	code, out := g.do(t, http.MethodGet, "/api/runs/"+id+"/report", "")
-	if code != http.StatusNotFound || out["error"] != "coordinator no longer holds this batch" {
-		t.Fatalf("%d %v", code, out)
-	}
-}
-
-func TestProvisionalReportIsNotStored(t *testing.T) {
-	n := testnode.New("node-1")
-	defer n.Close()
-	n.Update(func(n *testnode.Node) { n.CompleteAfter = 1_000_000 })
-	g := newGateway(t, opts{pollInterval: time.Hour}, n)
-	id := g.start(t, `{"coordinator":"node-1"}`)
-
-	code, out := g.do(t, http.MethodGet, "/api/runs/"+id+"/report", "")
-	if code != 200 || out["verdict"] != "PENDING" {
-		t.Fatalf("%d %v", code, out)
-	}
-	if r, _ := g.store.Get(id); r.Report != nil {
-		t.Fatalf("provisional report was stored: %s", r.Report)
-	}
-}
-
-func TestUnknownRuns(t *testing.T) {
-	n := testnode.New("node-1")
-	defer n.Close()
-	g := newGateway(t, opts{}, n)
-	for _, id := range []string{"not-base64!", runs.EncodeID("node-1", "batch-never")} {
-		for _, suffix := range []string{"", "/status", "/report"} {
-			if code, _ := g.do(t, http.MethodGet, "/api/runs/"+id+suffix, ""); code != http.StatusNotFound {
-				t.Fatalf("%s%s: %d", id, suffix, code)
-			}
+	for _, c := range cases {
+		rec := e.do(c.method, c.target, c.body)
+		if rec.Code != c.want || !strings.Contains(rec.Body.String(), c.contains) {
+			t.Errorf("%s: %d %s; want %d containing %q", c.name, rec.Code, rec.Body, c.want, c.contains)
 		}
 	}
-	if code, _ := g.do(t, http.MethodGet, "/api/nothing", ""); code != http.StatusNotFound {
-		t.Fatalf("unknown route: %d", code)
+}
+
+func TestStaleStatusWhenCoordinatorDown(t *testing.T) {
+	e := setup(t, "", bundle)
+	e.nodes[0].SetSteps(1000)
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	decode(t, e.do("POST", "/api/runs", `{"coordinator":"node-1"}`), &created)
+	deadline := time.Now().Add(3 * time.Second)
+	for e.nodes[0].StatusCalls() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("tracker never polled")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	e.nodes[0].SetDown(true)
+	var status struct {
+		State string
+		Stale bool
+	}
+	rec := e.do("GET", "/api/runs/"+created.RunID+"/status", "")
+	decode(t, rec, &status)
+	if rec.Code != 200 || !status.Stale || status.State != "running" {
+		t.Fatalf("status %d %s; want stored snapshot marked stale", rec.Code, rec.Body)
 	}
 }
 
-func TestListRuns(t *testing.T) {
-	n := testnode.New("node-1")
-	defer n.Close()
-	g := newGateway(t, opts{}, n)
-	first := g.start(t, `{"coordinator":"node-1"}`)
-	second := g.start(t, `{"coordinator":"node-1"}`)
-
-	code, out := g.do(t, http.MethodGet, "/api/runs?limit=1", "")
-	list := out["runs"].([]any)
-	if code != 200 || out["total"] != 2.0 || len(list) != 1 || list[0].(map[string]any)["run_id"] != second {
-		t.Fatalf("%d %v", code, out)
+func TestAuth(t *testing.T) {
+	e := setup(t, "s3cret", bundle)
+	if rec := e.do("GET", "/api/config", ""); rec.Code != 401 {
+		t.Fatalf("no token: %d", rec.Code)
 	}
-	_, out = g.do(t, http.MethodGet, "/api/runs?limit=1&offset=1", "")
-	if out["runs"].([]any)[0].(map[string]any)["run_id"] != first {
-		t.Fatalf("second page: %v", out)
+	if rec := e.do("GET", "/api/config", "", "Authorization", "Bearer wrong"); rec.Code != 401 {
+		t.Fatalf("wrong token: %d", rec.Code)
 	}
-	_, out = g.do(t, http.MethodGet, "/api/runs?limit=999", "")
-	if out["limit"] != 200.0 {
-		t.Fatalf("limit not clamped: %v", out)
+	if rec := e.do("GET", "/api/config", "", "Authorization", "Bearer s3cret"); rec.Code != 200 {
+		t.Fatalf("right token: %d", rec.Code)
 	}
-	for _, q := range []string{"limit=-1", "offset=x", "limit=1.5"} {
-		if code, _ := g.do(t, http.MethodGet, "/api/runs?"+q, ""); code != http.StatusBadRequest {
-			t.Fatalf("%s: %d", q, code)
+	for _, open := range []string{"/healthz", "/", "/assets/app-1.js"} {
+		if rec := e.do("GET", open, ""); rec.Code != 200 {
+			t.Fatalf("%s needs no token, got %d", open, rec.Code)
 		}
+	}
+}
+
+func TestStaticServing(t *testing.T) {
+	e := setup(t, "", bundle)
+	rec := e.do("GET", "/", "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "<title>p2p-sim") || rec.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("index: %d %q %v", rec.Code, rec.Body, rec.Header())
+	}
+	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
+		t.Fatalf("CSP %q", csp)
+	}
+	rec = e.do("GET", "/assets/app-1.js", "")
+	if rec.Code != 200 || rec.Body.String() != "console.log(1)" || !strings.Contains(rec.Header().Get("Cache-Control"), "immutable") {
+		t.Fatalf("asset: %d %q %v", rec.Code, rec.Body, rec.Header())
+	}
+	// Client routes and traversal attempts get the index (or the router's
+	// redirect to the cleaned path); nothing outside the bundle is served.
+	for _, path := range []string{"/live/abc", "/../../etc/passwd", "/assets/../../../etc/passwd", "/%2e%2e/%2e%2e/etc/passwd", "/assets"} {
+		rec := e.do("GET", path, "")
+		switch {
+		case rec.Code == 200 && strings.Contains(rec.Body.String(), "<title>p2p-sim"):
+		case rec.Code == http.StatusTemporaryRedirect && !strings.Contains(rec.Header().Get("Location"), ".."):
+		default:
+			t.Errorf("%s: %d %q; want the index fallback or a redirect to a clean path", path, rec.Code, rec.Body)
+		}
+	}
+	if rec := e.do("POST", "/", "x"); rec.Code != 405 {
+		t.Fatalf("POST /: %d", rec.Code)
+	}
+}
+
+func TestStaticWithoutBundle(t *testing.T) {
+	e := setup(t, "", fstest.MapFS{".placeholder": {Data: []byte("x")}})
+	rec := e.do("GET", "/", "")
+	if rec.Code != 404 || !strings.Contains(rec.Body.String(), "not embedded") {
+		t.Fatalf("got %d %q; want the not-built page", rec.Code, rec.Body)
+	}
+}
+
+func TestLiveStreamRelay(t *testing.T) {
+	e := setup(t, "", bundle)
+	srv := httptest.NewServer(e.handler)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/stream?node=node-2&lambda=0.8&mu=1&speed=10&duration=10&seed=1&evil=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("got %d %v", resp.StatusCode, resp.Header)
+	}
+	if strings.Count(string(body), "data: ") != 3 || !strings.Contains(string(body), `"type":"done"`) {
+		t.Fatalf("body %q", body)
+	}
+	queries := e.nodes[1].StreamQueries()
+	if len(queries) != 1 || strings.Contains(queries[0], "evil") || !strings.Contains(queries[0], "seed=1") {
+		t.Fatalf("node received %v; want only the stream parameters", queries)
+	}
+
+	e.nodes[0].SetStreamBusy(true)
+	for target, want := range map[string]int{
+		"/api/stream?node=node-1&lambda=0.8&mu=1": 503,
+		"/api/stream?node=node-9&lambda=0.8&mu=1": 400,
+		"/api/stream?node=node-3&mu=1":            400,
+	} {
+		if rec := e.do("GET", target, ""); rec.Code != want {
+			t.Errorf("%s: %d %s; want %d", target, rec.Code, rec.Body, want)
+		}
+	}
+}
+
+func TestNetStreamRelay(t *testing.T) {
+	e := setup(t, "", bundle)
+	srv := httptest.NewServer(e.handler)
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/api/netstream", "application/json",
+		strings.NewReader(`{"node":"node-3","scenario":{"duration":30},"speed":2,"seed":4}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(string(body), `"speed":2`) || !strings.Contains(string(body), `"duration":30`) ||
+		strings.Contains(string(body), `"node"`) {
+		t.Fatalf("got %d %s; want the node to receive {scenario, speed, seed} only", resp.StatusCode, body)
+	}
+	if rec := e.do("POST", "/api/netstream", `{"node":"node-9","scenario":{},"speed":1}`); rec.Code != 400 {
+		t.Fatalf("unknown node: %d", rec.Code)
+	}
+	if rec := e.do("POST", "/api/netstream", `{"node":"node-1","speed":1}`); rec.Code != 400 {
+		t.Fatalf("missing scenario passes through the node's 400, got %d", rec.Code)
 	}
 }

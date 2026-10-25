@@ -3,6 +3,7 @@ import type {
   GatewayConfig,
   HealthResponse,
   MockScenario,
+  NetworkReport,
   NodeReport,
   NodeStatus,
   RunCreated,
@@ -10,7 +11,12 @@ import type {
   RunParameters,
   RunRecord,
 } from "./types";
+import type { NetStreamEvent, Scenario } from "../lib/network";
+import { createSseParser, type TrafficEvent, type TrafficParams } from "../lib/traffic";
 import { MockApiClient } from "./mock/MockApiClient";
+
+/** Receives live traffic events; returns nothing. Closing is via the returned function. */
+export type TrafficHandler = (event: TrafficEvent) => void;
 
 export interface ApiClient {
   getConfig(): Promise<GatewayConfig>;
@@ -19,8 +25,14 @@ export interface ApiClient {
   listRuns(limit: number, offset: number): Promise<RunList>;
   getRun(runId: string): Promise<RunRecord>;
   getStatus(runId: string): Promise<NodeStatus>;
-  getReport(runId: string): Promise<NodeReport>;
+  getReport(runId: string): Promise<NodeReport | NetworkReport>;
   getHealth(): Promise<HealthResponse>;
+  /** Streams one live replication run on params.node. Returns a function that stops it. */
+  openTraffic(params: TrafficParams, onEvent: TrafficHandler): () => void;
+  /** Starts a network-scenario batch distributed over the pool. */
+  createNetworkRun(coordinator: string, scenario: Scenario, replications: number, baseSeed: number): Promise<RunCreated>;
+  /** Streams one live run of a network scenario on node. Returns a function that stops it. */
+  openNetworkTraffic(node: string, scenario: Scenario, speed: number, seed: number, start: number, onEvent: (event: NetStreamEvent) => void): () => void;
 }
 
 export class ApiError extends Error {
@@ -94,6 +106,63 @@ export class HttpApiClient implements ApiClient {
   getHealth() {
     return this.request<HealthResponse>("/healthz");
   }
+
+  openTraffic(params: TrafficParams, onEvent: TrafficHandler) {
+    const query = new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]));
+    return readEventStream<TrafficEvent>(`/api/stream?${query}`, undefined, onEvent);
+  }
+
+  createNetworkRun(coordinator: string, scenario: Scenario, replications: number, baseSeed: number) {
+    return this.request<RunCreated>("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({ coordinator, kind: "network", scenario, replications, base_seed: baseSeed }),
+    });
+  }
+
+  openNetworkTraffic(node: string, scenario: Scenario, speed: number, seed: number, start: number, onEvent: (event: NetStreamEvent) => void) {
+    return readEventStream<NetStreamEvent>("/api/netstream", JSON.stringify({ node, scenario, speed, seed, start }), onEvent);
+  }
+}
+
+/** Reads a Server-Sent Events response with fetch, so error bodies keep their message. */
+function readEventStream<E>(url: string, body: string | undefined, onEvent: (event: E | { type: "error"; message: string }) => void): () => void {
+  const controller = new AbortController();
+  const fail = (message: string) => onEvent({ type: "error", message });
+  void (async () => {
+    try {
+      const response = await fetch(url, {
+        method: body ? "POST" : "GET",
+        body,
+        signal: controller.signal,
+        headers: { Accept: "text/event-stream", ...(body ? { "Content-Type": "application/json" } : {}) },
+      });
+      if (!response.ok || !response.body) {
+        let message = `Stream request failed (${response.status}).`;
+        try {
+          const err = await response.json() as { error?: string };
+          if (err.error) message = err.error;
+        } catch { /* keep the generic message */ }
+        fail(message);
+        return;
+      }
+      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+      const push = createSseParser((data) => {
+        try {
+          onEvent(JSON.parse(data) as E);
+        } catch {
+          fail("The node sent an unreadable event.");
+        }
+      });
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        push(value);
+      }
+    } catch (cause) {
+      if (!controller.signal.aborted) fail(cause instanceof Error ? cause.message : "The stream was interrupted.");
+    }
+  })();
+  return () => controller.abort();
 }
 
 export function createApiClient(scenario: MockScenario): ApiClient {

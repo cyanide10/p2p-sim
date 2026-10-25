@@ -1,19 +1,13 @@
-import { Activity, CircleHelp, CircleX, Clock3, Network, RefreshCw } from "lucide-react";
+import { Activity, CircleHelp, CircleX, Clock3, Network, RadioTower, RefreshCw, Share2 } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { createApiClient } from "./api/client";
 import { MOCK_SCENARIOS, type ClusterSnapshot, type GatewayConfig, type MockScenario, type RunCreated } from "./api/types";
+import { parseHash } from "./lib/format";
 import { LaunchPage } from "./pages/LaunchPage";
 import { LivePage } from "./pages/LivePage";
+import { NetworkPage } from "./pages/NetworkPage";
 import { ReportPage } from "./pages/ReportPage";
-
-function decodeRunId(raw: string | undefined): string | null {
-  if (!raw) return null;
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return null;
-  }
-}
+import { TrafficPage } from "./pages/TrafficPage";
 
 const subscribeToHash = (callback: () => void) => {
   window.addEventListener("hashchange", callback);
@@ -156,6 +150,7 @@ function App() {
   const hash = useSyncExternalStore(subscribeToHash, getCurrentHash, () => "#/cluster");
   const mockEnabled = import.meta.env.VITE_USE_MOCK !== "false";
   const [scenario, setScenario] = useState<MockScenario>("happy-path");
+
   useEffect(() => {
     const changeScenario = (event: Event) => {
       const selected = (event as CustomEvent<string>).detail;
@@ -165,20 +160,11 @@ function App() {
     return () => window.removeEventListener("mock-scenario", changeScenario);
   }, []);
 
-  const [route = "cluster", rawId] = hash.replace(/^#\/?/, "").split("/");
-  const activeRoute = route || "cluster";
-  const runId = decodeRunId(rawId);
+  const { route: activeRoute, id: routeId, query } = parseHash(hash);
 
   const handleRunStarted = (run: RunCreated) => {
     window.location.hash = `#/live/${encodeURIComponent(run.run_id)}`;
   };
-
-  let page;
-  if (activeRoute === "cluster") page = <ClusterPage scenario={scenario} mockEnabled={mockEnabled} />;
-  else if (activeRoute === "launch") page = <LaunchPage scenario={scenario} onStarted={handleRunStarted} />;
-  else if (activeRoute === "live" && runId) page = <LivePage key={runId} runId={runId} scenario={scenario} />;
-  else if (activeRoute === "report" && runId) page = <ReportPage key={runId} runId={runId} scenario={scenario} />;
-  else page = <div className="empty-state"><CircleHelp size={22} /><strong>Page not found</strong><a href="#/cluster">Return to Cluster</a></div>;
 
   return (
     <div className="app-shell">
@@ -187,6 +173,8 @@ function App() {
         <div className="sidebar-caption">SIMULATION CONTROL</div>
         <nav className="primary-nav" aria-label="Primary navigation">
           <a className={activeRoute === "cluster" ? "active" : ""} href="#/cluster"><Network size={17} /><span>Cluster</span></a>
+          <a className={activeRoute === "network" ? "active" : ""} href="#/network"><Share2 size={17} /><span>Network lab</span></a>
+          <a className={activeRoute === "traffic" ? "active" : ""} href="#/traffic"><RadioTower size={17} /><span>Live traffic</span></a>
           <a className={activeRoute === "launch" ? "active" : ""} href="#/launch"><Activity size={17} /><span>Launch run</span></a>
           <a className="nav-muted" href="#/history" aria-disabled="true" onClick={(event) => event.preventDefault()}><Clock3 size={17} /><span>History</span><small>SOON</small></a>
         </nav>
@@ -194,7 +182,13 @@ function App() {
       </aside>
       <main className="main-area">
         <header className="topbar"><span>Distributed queueing simulator</span><span className="topbar-right">{mockEnabled ? "LOCAL PREVIEW" : "GATEWAY"}</span></header>
-        {page}
+        {activeRoute === "cluster" ? <ClusterPage scenario={scenario} mockEnabled={mockEnabled} />
+          : activeRoute === "launch" ? <LaunchPage key={query.get("resubmit") ?? "new"} scenario={scenario} onStarted={handleRunStarted} resubmitRunId={query.get("resubmit")} />
+          : activeRoute === "network" ? <NetworkPage scenario={scenario} mockEnabled={mockEnabled} />
+          : activeRoute === "traffic" ? <TrafficPage scenario={scenario} mockEnabled={mockEnabled} />
+          : activeRoute === "live" && routeId ? <LivePage runId={routeId} scenario={scenario} mockEnabled={mockEnabled} />
+          : activeRoute === "report" && routeId ? <ReportPage runId={routeId} scenario={scenario} />
+          : <section className="page-content"><div className="empty-state"><CircleHelp size={22} /><strong>Page not found</strong><a href="#/cluster">Return to Cluster</a></div></section>}
       </main>
     </div>
   );

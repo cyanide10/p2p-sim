@@ -1,6 +1,6 @@
 import type { RunParameters } from "../api/types";
 
-export type RunField = keyof Omit<RunParameters, "serial_baseline">;
+export type RunField = keyof Omit<RunParameters, "serial_baseline" | "kind" | "scenario">;
 export type FieldErrors = Partial<Record<RunField, string>>;
 
 export interface RunValidation {

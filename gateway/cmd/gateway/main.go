@@ -1,21 +1,14 @@
-// Command gateway serves the p2p-sim web app's API. It forwards run
-// requests to the chosen coordinating node, tracks each run until its report
-// is available, and keeps the results in memory so the browser that started
-// a run can always read them back.
-//
-// Configuration (environment variables):
-//
-//	GATEWAY_LISTEN        bind address (default "127.0.0.1:8090")
-//	PEERS_CONFIG          node ids and host-reachable URLs (default "config/peers.gateway.yaml")
-//	NODE_CONFIG           node config whose defaults block fills omitted run fields (default "config/node.yaml")
-//	NODE_REQUEST_TIMEOUT  per node call (default "5s")
-//	LOG_LEVEL             debug | info | warn | error (default "info")
+// Command gateway serves the p2p-sim GUI and its API: it aggregates node
+// health, submits batches to a chosen coordinator, and keeps run history.
 package main
 
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,84 +19,106 @@ import (
 	"github.com/p2p-sim/gateway/internal/nodeclient"
 	"github.com/p2p-sim/gateway/internal/runs"
 	"github.com/p2p-sim/gateway/internal/server"
+	"github.com/p2p-sim/gateway/internal/store"
+	"github.com/p2p-sim/gateway/webui"
 )
 
-const (
-	historyCapacity = 200
-	pollInterval    = time.Second
-	maxPollFailures = 5
-)
+var version = "dev"
 
 func main() {
-	if err := run(); err != nil {
-		slog.Error("gateway exited", "error", err)
+	healthcheck := flag.Bool("healthcheck", false, "probe the local /healthz and exit 0 if healthy (for container health checks)")
+	flag.Parse()
+
+	settings, err := config.LoadSettings(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "gateway:", err)
+		os.Exit(2)
+	}
+	if *healthcheck {
+		os.Exit(probe(settings.Listen))
+	}
+	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: settings.LogLevel}))
+	if err := run(settings, log); err != nil {
+		log.Error("gateway stopped", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	settings, err := config.LoadSettings(os.Getenv)
-	if err != nil {
-		return err
-	}
-	var level slog.LevelVar
-	if err := level.UnmarshalText([]byte(settings.LogLevel)); err != nil {
-		return err
-	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &level}))
-
-	peers, err := config.LoadPeers(settings.PeersPath)
+func run(settings config.Settings, log *slog.Logger) error {
+	peers, err := config.NewPeerSource(settings.PeersPath, log)
 	if err != nil {
 		return err
 	}
 	defaults, err := config.LoadDefaults(settings.NodeConfigPath)
 	if err != nil {
-		return err
+		log.Warn("using built-in run defaults", "err", err)
 	}
-	peerURLs := make(map[string]string, len(peers))
-	for _, p := range peers {
-		peerURLs[p.ID] = p.URL
-		logger.Info("node configured", "peer_id", p.ID, "url", p.URL)
+	db, err := store.Open(settings.DBPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
 	}
+	defer db.Close()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	client := nodeclient.New(settings.RequestTimeout)
-	store := runs.NewStore(historyCapacity)
-	tracker := runs.NewTracker(ctx, store, client, peerURLs, pollInterval, maxPollFailures, logger)
+	nodes := nodeclient.New(settings.NodeTimeout)
+	manager := runs.New(runs.Options{
+		Store: db, Nodes: nodes, Peers: peers, Defaults: defaults,
+		PollInterval: settings.PollInterval, LostAfter: settings.LostAfter,
+		HistoryLimit: settings.HistoryLimit, MaxTrackers: settings.MaxTrackers, Log: log,
+	})
+	if err := manager.Resume(context.Background()); err != nil {
+		return fmt.Errorf("resume tracking: %w", err)
+	}
 
 	srv := &http.Server{
 		Addr: settings.Listen,
-		Handler: server.New(server.Deps{
-			Peers: peers, Defaults: defaults, Client: client,
-			Store: store, Tracker: tracker, Logger: logger, Version: "dev",
+		Handler: server.Handler(server.Options{
+			Peers: peers, Nodes: nodes, Runs: manager, Defaults: defaults,
+			Token: settings.Token, Version: version, Static: webui.FS(), Log: log,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
+		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
-	errCh := make(chan error, 1)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	errc := make(chan error, 1)
 	go func() {
-		logger.Info("gateway listening", "addr", settings.Listen, "nodes", len(peers))
-		errCh <- srv.ListenAndServe()
+		log.Info("gateway listening", "addr", settings.Listen, "peers", len(peers.Peers()), "auth", settings.Token != "")
+		errc <- srv.ListenAndServe()
 	}()
 
 	select {
-	case err := <-errCh:
+	case err := <-errc:
+		manager.Shutdown(context.Background())
 		return err
 	case <-ctx.Done():
 	}
-
-	logger.Info("shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	log.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	err = srv.Shutdown(shutdownCtx)
-	tracker.Wait()
-	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-		return err
+	if trackErr := manager.Shutdown(shutdownCtx); trackErr != nil {
+		err = errors.Join(err, trackErr)
 	}
-	return nil
+	return err
+}
+
+// probe checks the gateway's own /healthz over loopback.
+func probe(listen string) int {
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return 1
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + net.JoinHostPort("127.0.0.1", port) + "/healthz")
+	if err != nil {
+		return 1
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
