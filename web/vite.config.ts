@@ -7,7 +7,7 @@ export default defineConfig(({ mode }) => ({
     host: "127.0.0.1",
     proxy:
       mode === "gateway"
-        ? { "/api": "http://127.0.0.1:8080", "/healthz": "http://127.0.0.1:8080" }
+        ? { "/api": "http://127.0.0.1:8090", "/healthz": "http://127.0.0.1:8090" }
         : undefined,
   },
 }));
