@@ -152,6 +152,25 @@ func TestRunLifecycleOverHTTP(t *testing.T) {
 	}
 }
 
+func TestPDESPlanAndScenarioSizeLimit(t *testing.T) {
+	e := setup(t, "", bundle)
+	rec := e.do("POST", "/api/pdes/plan",
+		`{"coordinator":"node-1","scenario":{"nodes":[{"id":"r1"}]},"parts":2}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"parts":2`) {
+		t.Fatalf("plan response %d %s", rec.Code, rec.Body)
+	}
+	oversizedScenario := `{"coordinator":"node-1","kind":"pdes","scenario":"` +
+		strings.Repeat("x", (4<<20)+1) + `"}`
+	rec = e.do("POST", "/api/runs", oversizedScenario)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "scenario is larger than 4 MiB") {
+		t.Fatalf("oversized scenario response %d %s", rec.Code, rec.Body)
+	}
+	rec = e.do("POST", "/api/runs", `{"coordinator":"`+strings.Repeat("x", maxPDESBody+1)+`"}`)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized request response %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestErrorMapping(t *testing.T) {
 	e := setup(t, "", bundle)
 	e.nodes[0].SetBusy(true)
@@ -168,7 +187,7 @@ func TestErrorMapping(t *testing.T) {
 		{"validation", "POST", "/api/runs", `{"coordinator":"node-1","lambda":2}`, 400, "lambda"},
 		{"unknown field", "POST", "/api/runs", `{"coordinator":"node-1","lamda":0.5}`, 400, "unknown field"},
 		{"trailing data", "POST", "/api/runs", `{"coordinator":"node-1"} {}`, 400, "unexpected data"},
-		{"body too large", "POST", "/api/runs", `{"coordinator":"` + strings.Repeat("x", 1<<20) + `"}`, 413, "1 MiB"},
+		{"body too large", "POST", "/api/runs", `{"coordinator":"` + strings.Repeat("x", maxPDESBody+1) + `"}`, 413, "4 MiB"},
 		{"unknown run", "GET", "/api/runs/nope", "", 404, "not found"},
 		{"unknown run status", "GET", "/api/runs/nope/status", "", 404, "not found"},
 		{"bad limit", "GET", "/api/runs?limit=-1", "", 400, "limit"},

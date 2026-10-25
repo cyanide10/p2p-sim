@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyNetEvents, playbackSpeeds, checkScenario, cloneScenario, HOP_MS, initialLive, nextId, offeredPackets, parseScenario, SAMPLES, toWire, type NetStreamEvent } from "./network";
+import { applyNetEvents, playbackSpeeds, checkScenario, cloneScenario, generateGridScenario, HOP_MS, initialLive, nextId, offeredPackets, parseScenario, SAMPLES, toWire, type GridOptions, type NetStreamEvent } from "./network";
 
 describe("samples", () => {
   it("are all valid", () => {
@@ -37,6 +37,39 @@ describe("ids and wire format", () => {
     const parsed = parseScenario({ duration: 10, nodes: [{ id: "a", kind: "host" }], links: [] });
     expect(parsed?.nodes[0].x).toBeTypeOf("number");
     expect(parseScenario({ nodes: "x" })).toBeNull();
+  });
+});
+
+describe("grid and torus generation", () => {
+  const options: GridOptions = {
+    topology: "grid", rows: 4, columns: 4, hostsPerRouter: 1, flowCount: 16,
+    flowRate: 8, bandwidth: 20, delay: 2, serviceRate: 100, buffer: 50,
+    duration: 600, seed: 12345,
+  };
+
+  it("generates valid deterministic scenarios with generated layout coordinates", () => {
+    const first = generateGridScenario(options);
+    expect(generateGridScenario(options)).toEqual(first);
+    expect(checkScenario(first)).toEqual([]);
+    expect(first.nodes.filter((n) => n.kind === "router")).toHaveLength(16);
+    expect(first.nodes.filter((n) => n.kind === "host")).toHaveLength(16);
+    expect(first.flows).toHaveLength(16);
+    expect(first.nodes.every((n) => Number.isFinite(n.x) && Number.isFinite(n.y))).toBe(true);
+    expect(new Set(first.flows.map((f) => `${f.src}:${f.dst}`)).size).toBe(16);
+  });
+
+  it("adds wraparound links for a torus without duplicate physical links", () => {
+    const grid = generateGridScenario(options);
+    const torus = generateGridScenario({ ...options, topology: "torus" });
+    expect(torus.links.length).toBeGreaterThan(grid.links.length);
+    expect(new Set(torus.links.map((link) => [link.a, link.b].sort().join(":"))).size).toBe(torus.links.length);
+    expect(checkScenario(torus)).toEqual([]);
+  });
+
+  it("rejects settings that exceed simulator limits", () => {
+    expect(() => generateGridScenario({ ...options, rows: 8, columns: 8 })).toThrow("exceeds 60 nodes");
+    expect(() => generateGridScenario({ ...options, flowRate: 100 })).toThrow("offered packets");
+    expect(() => generateGridScenario({ ...options, delay: Number.POSITIVE_INFINITY })).toThrow("supported range");
   });
 });
 

@@ -19,6 +19,8 @@ import (
 // MaxBody caps how much of a node response is read.
 const MaxBody = 4 << 20
 
+const maxReportBody = 64 << 20
+
 type Kind int
 
 const (
@@ -171,9 +173,10 @@ type RunStarted struct {
 	BatchID      string `json:"batch_id"`
 	Status       string `json:"status"`
 	Coordinator  string `json:"coordinator"`
-	Replications int    `json:"replications"`
+	Replications int    `json:"replications,omitempty"`
 	BaseSeed     int64  `json:"base_seed"`
-	Peers        int    `json:"peers"`
+	Peers        int    `json:"peers,omitempty"`
+	Parts        int    `json:"parts,omitempty"`
 }
 
 func (c *Client) Health(ctx context.Context, base string) (Health, error) {
@@ -235,18 +238,65 @@ func (c *Client) NetRun(ctx context.Context, base string, req NetRunRequest) (Ru
 	return started, err
 }
 
+type PDESRunRequest struct {
+	Scenario json.RawMessage `json:"scenario"`
+	Parts    *int            `json:"parts,omitempty"`
+	BaseSeed *int64          `json:"base_seed,omitempty"`
+	Baseline *bool           `json:"baseline,omitempty"`
+}
+
+type PDESPlanRequest struct {
+	Scenario json.RawMessage `json:"scenario"`
+	Parts    int             `json:"parts,omitempty"`
+}
+
+func (c *Client) PDESRun(ctx context.Context, base string, req PDESRunRequest) (RunStarted, error) {
+	var started RunStarted
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return started, err
+	}
+	body, err := c.doTimeout(ctx, http.MethodPost, base+"/pdesrun", payload, c.timeout+15*time.Second)
+	if err == nil {
+		err = decode(body, &started)
+	}
+	if err == nil && started.BatchID == "" {
+		err = &Error{Kind: KindDecode, Message: "pdesrun response has no batch_id"}
+	}
+	return started, err
+}
+
+func (c *Client) PDESPlan(ctx context.Context, base string, req PDESPlanRequest) (json.RawMessage, error) {
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := c.doTimeout(ctx, http.MethodPost, base+"/pdes/plan", payload, c.timeout+15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var object map[string]json.RawMessage
+	if err := decode(body, &object); err != nil {
+		return nil, err
+	}
+	if object == nil {
+		return nil, &Error{Kind: KindDecode, Message: "pdes plan response is not a JSON object"}
+	}
+	return body, nil
+}
+
 // Status returns the raw GET /status body for a batch.
 func (c *Client) Status(ctx context.Context, base, batchID string) (json.RawMessage, error) {
-	return c.object(ctx, base+"/status?batch_id="+url.QueryEscape(batchID))
+	return c.object(ctx, base+"/status?batch_id="+url.QueryEscape(batchID), MaxBody)
 }
 
 // Report returns the raw GET /report body for a batch.
 func (c *Client) Report(ctx context.Context, base, batchID string) (json.RawMessage, error) {
-	return c.object(ctx, base+"/report?batch_id="+url.QueryEscape(batchID))
+	return c.object(ctx, base+"/report?batch_id="+url.QueryEscape(batchID), maxReportBody)
 }
 
-func (c *Client) object(ctx context.Context, target string) (json.RawMessage, error) {
-	body, err := c.do(ctx, http.MethodGet, target, nil)
+func (c *Client) object(ctx context.Context, target string, limit int64) (json.RawMessage, error) {
+	body, err := c.doTimeoutLimit(ctx, http.MethodGet, target, nil, c.timeout, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -262,6 +312,10 @@ func (c *Client) do(ctx context.Context, method, target string, payload []byte) 
 }
 
 func (c *Client) doTimeout(ctx context.Context, method, target string, payload []byte, timeout time.Duration) ([]byte, error) {
+	return c.doTimeoutLimit(ctx, method, target, payload, timeout, MaxBody)
+}
+
+func (c *Client) doTimeoutLimit(ctx context.Context, method, target string, payload []byte, timeout time.Duration, limit int64) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var reader io.Reader
@@ -281,12 +335,12 @@ func (c *Client) doTimeout(ctx context.Context, method, target string, payload [
 		return nil, classify(ctx, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxBody+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, classify(ctx, err)
 	}
-	if len(body) > MaxBody {
-		return nil, &Error{Kind: KindDecode, Message: "response body exceeds 4 MiB"}
+	if int64(len(body)) > limit {
+		return nil, &Error{Kind: KindDecode, Message: fmt.Sprintf("response body exceeds %d bytes", limit)}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		e := &Error{Kind: KindStatus, Status: resp.StatusCode, Message: http.StatusText(resp.StatusCode)}

@@ -1,12 +1,13 @@
-import { ArrowLeft, CircleDot, Download, FilePlus2, Link2, LoaderCircle, MousePointer2, Play, Plus, Server, Trash2, TriangleAlert, Upload, X } from "lucide-react";
+import { ArrowLeft, CircleDot, Download, FilePlus2, Link2, LoaderCircle, MousePointer2, Network, Play, Plus, Server, Trash2, TriangleAlert, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, createApiClient } from "../api/client";
 import type { MockScenario } from "../api/types";
+import type { PartitionPlan } from "../api/types";
 import { NetworkPlayer } from "../components/NetworkPlayer";
 import { TopologyCanvas, type Selection, type Tool } from "../components/TopologyCanvas";
 import {
-  checkScenario, cloneScenario, flowSlot, nextId, offeredPackets, parseScenario,
-  SAMPLES, toWire, type Flow, type FlowPattern, type Scenario,
+  checkScenario, cloneScenario, flowSlot, generateGridScenario, nextId, offeredPackets, parseScenario,
+  SAMPLES, toWire, type Flow, type FlowPattern, type GridOptions, type Scenario,
 } from "../lib/network";
 
 const STORAGE_KEY = "p2p-sim-network";
@@ -67,6 +68,14 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
   const [coordinator, setCoordinator] = useState("");
   const [copies, setCopies] = useState(30);
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 1_000_000));
+  const [parts, setParts] = useState(1);
+  const [baseline, setBaseline] = useState(true);
+  const [partitionPlan, setPartitionPlan] = useState<PartitionPlan | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [grid, setGrid] = useState<Omit<GridOptions, "seed">>({
+    topology: "grid", rows: 4, columns: 4, hostsPerRouter: 1, flowCount: 16,
+    flowRate: 8, bandwidth: 20, delay: 2, serviceRate: 100, buffer: 50, duration: 600,
+  });
   const [view, setView] = useState<"edit" | "live">("edit");
   const [notice, setNotice] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -83,6 +92,7 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
       const healthy = new Set(cluster.nodes.filter((n) => n.healthy).map((n) => n.id));
       const list = config.peers.map((p) => ({ id: p.id, healthy: healthy.has(p.id) }));
       setPool(list);
+      setParts(Math.max(1, Math.min(healthy.size, sc.nodes.filter((node) => node.kind === "router").length || 1)));
       const first = list.find((n) => n.healthy)?.id ?? list[0]?.id ?? "";
       setLiveNode((v) => v || first);
       setCoordinator((v) => v || first);
@@ -90,8 +100,11 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
     return () => { active = false; };
   }, [api]);
 
+  useEffect(() => { setPartitionPlan(null); }, [sc, parts, coordinator]);
+
 
   const errors = checkScenario(sc);
+  const maxParts = Math.min(pool.filter((node) => node.healthy).length, sc.nodes.filter((node) => node.kind === "router").length);
   const flowIndex = Object.fromEntries(sc.flows.map((f, i) => [f.id, i]));
   const hosts = sc.nodes.filter((n) => n.kind === "host");
 
@@ -178,6 +191,46 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
     }
   };
 
+  const generate = () => {
+    try {
+      const generated = generateGridScenario({ ...grid, seed });
+      setSc(generated);
+      setParts(Math.max(1, Math.min(pool.filter((node) => node.healthy).length, generated.nodes.filter((node) => node.kind === "router").length)));
+      setSelected(null);
+      setNotice({ kind: "info", text: `Generated a ${grid.topology} with ${generated.nodes.length} nodes and ${generated.flows.length} seeded flows.` });
+    } catch (cause) {
+      setNotice({ kind: "error", text: cause instanceof Error ? cause.message : "Could not generate this topology." });
+    }
+  };
+
+  const previewPartitions = async () => {
+    if (errors.length || !coordinator || maxParts < 1 || parts > maxParts) return;
+    setPlanning(true);
+    setNotice(null);
+    try {
+      const plan = await api.planPDES(coordinator, toWire(sc), parts);
+      setPartitionPlan(plan);
+    } catch (cause) {
+      setNotice({ kind: "error", text: cause instanceof Error ? cause.message : "Could not plan partitions." });
+    } finally {
+      setPlanning(false);
+    }
+  };
+
+  const runPDES = async () => {
+    if (!partitionPlan || errors.length || !coordinator) return;
+    setSubmitting(true);
+    setNotice(null);
+    try {
+      const created = await api.createPDESRun(coordinator, toWire(sc), parts, seed, baseline);
+      window.location.hash = `#/live/${encodeURIComponent(created.run_id)}`;
+    } catch (cause) {
+      setNotice({ kind: "error", text: cause instanceof Error ? cause.message : "Could not start the partitioned run." });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const exportJson = () => {
     const blob = new Blob([JSON.stringify(toWire(sc), null, 2)], { type: "application/json" });
     const a = document.createElement("a");
@@ -248,6 +301,46 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
         {errors.length > 0 && <ul className="net-errors">{errors.slice(0, 5).map((e) => <li key={e}><TriangleAlert size={13} />{e}</li>)}</ul>}
       </div>
 
+      <section className="pdes-launch-panel" aria-labelledby="pdes-launch-heading">
+        <div className="pdes-panel-heading">
+          <div><p className="eyebrow">PARTITIONED EXECUTION</p><h2 id="pdes-launch-heading">Generate a grid and run PDES</h2></div>
+          <button className="ghost-button" type="button" onClick={generate}><Network size={15} />Generate grid</button>
+        </div>
+        <div className="pdes-generator-grid">
+          <label className="net-field"><span>Layout</span><select value={grid.topology} onChange={(event) => setGrid({ ...grid, topology: event.target.value as GridOptions["topology"] })}><option value="grid">Grid</option><option value="torus">Torus</option></select></label>
+          <NumInput label="Router rows" value={grid.rows} onChange={(v) => setGrid({ ...grid, rows: Math.round(v) })} min={2} step="1" />
+          <NumInput label="Router columns" value={grid.columns} onChange={(v) => setGrid({ ...grid, columns: Math.round(v) })} min={2} step="1" />
+          <NumInput label="Hosts / router" value={grid.hostsPerRouter} onChange={(v) => setGrid({ ...grid, hostsPerRouter: Math.round(v) })} min={1} step="1" />
+          <NumInput label="Flows" value={grid.flowCount} onChange={(v) => setGrid({ ...grid, flowCount: Math.round(v) })} min={1} step="1" />
+          <NumInput label="Flow rate" value={grid.flowRate} onChange={(v) => setGrid({ ...grid, flowRate: v })} min={0.01} />
+          <NumInput label="Bandwidth" value={grid.bandwidth} onChange={(v) => setGrid({ ...grid, bandwidth: v })} min={0.01} />
+          <NumInput label="Link delay (s)" value={grid.delay} onChange={(v) => setGrid({ ...grid, delay: v })} min={0} />
+          <NumInput label="Router service rate" value={grid.serviceRate} onChange={(v) => setGrid({ ...grid, serviceRate: v })} min={0.01} />
+          <NumInput label="Router buffer" value={grid.buffer} onChange={(v) => setGrid({ ...grid, buffer: Math.round(v) })} min={1} step="1" />
+          <NumInput label="Duration (s)" value={grid.duration} onChange={(v) => setGrid({ ...grid, duration: v })} min={1} />
+          <NumInput label="Generator seed" value={seed} onChange={setSeed} min={0} step="1" />
+        </div>
+        <div className="pdes-controls">
+          <label className="net-field"><span>Partitions</span><select value={parts} onChange={(event) => setParts(Number(event.target.value))}>
+            {Array.from({ length: Math.max(1, maxParts) }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}</option>)}
+          </select></label>
+          <label className="toggle-row"><input type="checkbox" checked={baseline} onChange={(event) => setBaseline(event.target.checked)} /><span className="toggle-copy"><strong>Run serial baseline</strong><small>Compare merged results with one-process execution.</small></span></label>
+          <button type="button" className="ghost-button" onClick={() => void previewPartitions()} disabled={planning || errors.length > 0 || !coordinator || maxParts < 1 || parts > maxParts}>
+            {planning ? <LoaderCircle size={15} className="button-spin" /> : <CircleDot size={15} />}Preview plan
+          </button>
+          <button type="button" className="primary-button" onClick={() => void runPDES()} disabled={!partitionPlan || submitting || errors.length > 0 || !coordinator}>
+            {submitting ? <LoaderCircle size={15} className="button-spin" /> : <Play size={15} fill="currentColor" />}Run partitioned
+          </button>
+        </div>
+        <p className="pdes-plan-note">{pool.filter((node) => node.healthy).length} healthy nodes · max {maxParts} partitions · same seed {seed} reproduces this generated traffic matrix.</p>
+        {partitionPlan && <div className="pdes-plan-summary" role="status">
+          <span><strong>Lookahead</strong> {partitionPlan.lookahead.toPrecision(4)} s</span>
+          <span><strong>Windows</strong> {partitionPlan.windows.toLocaleString()}</span>
+          <span><strong>Cut links</strong> {partitionPlan.cut_links.length ? partitionPlan.cut_links.join(", ") : "none"}</span>
+          <span><strong>Load</strong> {partitionPlan.load.join(" / ")}</span>
+        </div>}
+      </section>
+
       {view === "live" ? (
         <NetworkPlayer api={api} scenario={sc} copies={[{ label: `Seed ${seed}`, seed }]} autoPlay defaultNode={liveNode}
           leading={<button type="button" className="ghost-button" onClick={() => setView("edit")}><ArrowLeft size={14} />Editor</button>} />
@@ -272,6 +365,7 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
           <p className="net-tool-hint">{tools.find((t) => t.id === tool)?.hint}{tool === "select" && selected ? " · Delete key removes the selection" : ""}</p>
           <div className="net-canvas">
             <TopologyCanvas scenario={sc} mode="edit" tool={tool} selected={selected} pendingLink={pendingLink}
+              partitionAssignment={partitionPlan?.assignment} cutLinks={partitionPlan?.cut_links}
               onSelect={setSelected} onPlace={place} onMove={(id, x, y) => update((d) => { const n = d.nodes.find((v) => v.id === id); if (n) { n.x = x; n.y = y; } })}
               onLinkEnd={linkEnd} onDelete={remove} flowIndex={flowIndex} />
           </div>

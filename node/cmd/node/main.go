@@ -33,6 +33,7 @@ import (
 	"github.com/p2p-sim/node/internal/config"
 	"github.com/p2p-sim/node/internal/dispatch"
 	"github.com/p2p-sim/node/internal/netbatch"
+	"github.com/p2p-sim/node/internal/pdes"
 	"github.com/p2p-sim/node/internal/peers"
 	"github.com/p2p-sim/node/internal/sim"
 	"github.com/p2p-sim/node/internal/worker"
@@ -109,9 +110,17 @@ func run(logger *slog.Logger) error {
 	manager := batch.NewManager(ctx, dispatcher, peerList, nodeID, cfg.Defaults, cfg.PhaseTimeout, logger)
 	netsim := &sim.Network{Python: cfg.PythonBin, Script: netScript}
 	netManager := netbatch.NewManager(ctx, dispatcher, peerList, nodeID, netsim, cfg.PhaseTimeout, logger)
+	pdesHost := pdes.NewHost(ctx, (pdes.ProcessFactory{Python: cfg.PythonBin, Script: netScript}).New,
+		executor, 60*time.Second)
+	defer pdesHost.Close()
+	pdesManager := pdes.NewManager(ctx, netsim, pdesHost, peerList, nodeID, client,
+		pdes.NewPeerClient(cfg.RequestTimeout), cfg.PDEStepTimeout, cfg.PhaseTimeout)
 
 	// POST /task can take up to SimTimeout; GET /peers up to HealthTimeout.
 	writeTimeout := cfg.SimTimeout + 5*time.Second
+	if pdesWriteTimeout := cfg.PDEStepTimeout + 5*time.Second; pdesWriteTimeout > writeTimeout {
+		writeTimeout = pdesWriteTimeout
+	}
 	if w := cfg.HealthTimeout + 10*time.Second; w > writeTimeout {
 		writeTimeout = w
 	}
@@ -119,8 +128,9 @@ func run(logger *slog.Logger) error {
 	streamer := &sim.Streamer{Python: cfg.PythonBin, Script: cfg.SimScript}
 	routes := http.NewServeMux()
 	routes.Handle("GET /stream", api.StreamHandler(streamer, executor, nodeID, logger))
-	routes.Handle("/", api.NetworkHandler(netManager, netsim, executor, nodeID, logger,
-		api.NewHandler(manager, nodeID, peerList, client, executor, logger)))
+	routes.Handle("/", pdes.NewHandler(pdesHost, pdesManager,
+		api.NetworkHandler(netManager, netsim, executor, nodeID, logger,
+			api.NewHandler(manager, nodeID, peerList, client, executor, logger))))
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           routes,

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +131,10 @@ func TestValidation(t *testing.T) {
 		"warmup":              {Coordinator: "node-1", WarmupTime: ptr(20000.0)},
 		"replications":        {Coordinator: "node-1", Replications: ptr(1)},
 		"seed":                {Coordinator: "node-1", BaseSeed: ptr(int64(-1))},
+		"pdes parts":          {Coordinator: "node-1", Kind: "pdes", Scenario: json.RawMessage(`{}`), Parts: ptr(0)},
+		"pdes seed":           {Coordinator: "node-1", Kind: "pdes", Scenario: json.RawMessage(`{}`), BaseSeed: ptr(int64(-1))},
+		"pdes scenario size": {Coordinator: "node-1", Kind: "pdes",
+			Scenario: json.RawMessage(`"` + strings.Repeat("x", (4<<20)+1) + `"`)},
 	}
 	for name, req := range cases {
 		var v *ValidationError
@@ -142,6 +147,52 @@ func TestValidation(t *testing.T) {
 			t.Fatal("an invalid request reached a node")
 		}
 	}
+}
+
+func TestPDESRunTracksAndPersistsParameters(t *testing.T) {
+	f := setup(t)
+	m := f.manager(t)
+	scenario := json.RawMessage(`{"nodes":[{"id":"r1"}]}`)
+	created, err := m.Create(context.Background(), CreateRequest{
+		Coordinator: "node-2", Kind: "pdes", Scenario: scenario, Parts: ptr(2),
+		BaseSeed: ptr(int64(42)), Baseline: ptr(false),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Parts != 2 || created.BaseSeed != 42 || created.Coordinator != "node-2" {
+		t.Fatalf("created %+v", created)
+	}
+	sent := f.nodes[1].RunRequests()
+	if len(sent) != 1 || sent[0]["parts"] != float64(2) || sent[0]["base_seed"] != float64(42) || sent[0]["baseline"] != false {
+		t.Fatalf("node received %v", sent)
+	}
+	run := waitState(t, f.store, created.RunID, store.StateComplete)
+	if run.Params.Kind != "pdes" || string(run.Params.Scenario) != string(scenario) ||
+		run.Params.Parts != 2 || run.Params.Baseline == nil || *run.Params.Baseline || run.Params.BaseSeed != 42 {
+		t.Fatalf("stored params %+v", run.Params)
+	}
+}
+
+func TestPDESFailedStateIsTerminalAndStored(t *testing.T) {
+	f := setup(t)
+	f.nodes[0].SetSteps(1)
+	f.nodes[0].SetPDESFailure(true)
+	m := f.manager(t)
+	created, err := m.Create(context.Background(), CreateRequest{
+		Coordinator: "node-1", Kind: "pdes", Scenario: json.RawMessage(`{"nodes":[{"id":"r1"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := waitState(t, f.store, created.RunID, store.StateFailed)
+	if run.Status == nil || run.Report == nil {
+		t.Fatalf("failed run did not retain status and report: %+v", run)
+	}
+	if body, err := m.Status(context.Background(), created.RunID); err != nil || stale(body) {
+		t.Fatalf("terminal status %s, %v", body, err)
+	}
+	waitFor(t, func() bool { return m.Tracking() == 0 })
 }
 
 func TestBusyCoordinatorPassesThrough409(t *testing.T) {

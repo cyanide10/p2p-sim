@@ -4,7 +4,7 @@ import { ApiError, createApiClient } from "../api/client";
 import type { GatewayConfig, MockScenario, Peer, RunCreated, RunParameters, RunRecord } from "../api/types";
 import { randomSeed, validateRun, type RunField } from "../lib/validation";
 
-type NumericField = Exclude<keyof RunParameters, "serial_baseline" | "kind" | "scenario">;
+type NumericField = Exclude<keyof RunParameters, "serial_baseline" | "baseline" | "parts" | "kind" | "scenario">;
 type Draft = Record<NumericField, string> & { serial_baseline: boolean };
 
 const fieldConfig: Array<{

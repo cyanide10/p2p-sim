@@ -25,7 +25,7 @@ func TestFileAndEnvOverrides(t *testing.T) {
 	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := map[string]string{"MAX_ATTEMPTS": "4", "HEALTH_TIMEOUT": "750ms"}
+	env := map[string]string{"MAX_ATTEMPTS": "4", "HEALTH_TIMEOUT": "750ms", "PDES_STEP_TIMEOUT": "20s"}
 	cfg, err := Load(path, func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +38,9 @@ func TestFileAndEnvOverrides(t *testing.T) {
 	}
 	if cfg.HealthTimeout != 750*time.Millisecond {
 		t.Errorf("health_timeout = %v", cfg.HealthTimeout)
+	}
+	if cfg.PDEStepTimeout != 20*time.Second {
+		t.Errorf("pdes_step_timeout = %v", cfg.PDEStepTimeout)
 	}
 	if cfg.Defaults.Lambda != 0.5 || !cfg.Defaults.SerialBaseline || cfg.Defaults.Mu != 1.0 {
 		t.Errorf("defaults = %+v (unset fields must keep built-in values)", cfg.Defaults)

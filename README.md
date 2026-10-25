@@ -78,7 +78,7 @@ docker compose -f docker-compose.yml -f docker-compose.web.yml up --build   # 3 
 # open http://localhost:8090
 ```
 
-- **Network lab:** draw any network (hosts, routers with service rate and buffer, links with bandwidth, delay and buffer), add flows between hosts (steady, rate schedules with steps or ramps, or bursty on/off), and schedule link or router failures. Routing is shortest path and is recomputed on every failure and recovery. Then either:
+- **Network lab:** draw any network (hosts, routers with service rate and buffer, links with bandwidth, delay and buffer), add flows between hosts (steady, rate schedules with steps or ramps, or bursty on/off), and schedule link or router failures. Routing is shortest path and is recomputed on every failure and recovery. Random streams are derived independently from the seed for each flow and router, so traffic and service randomness do not depend on entity iteration order. This changes the results produced by existing network seeds once. Then either:
   - **Watch live:** one node simulates the network in real time; packets move along links in their flow's color, links thicken and darken with load, saturated links are flagged, and failures and drops are shown as they happen.
   - **Run on all nodes:** N independent copies (different seeds) are spread over every node, as with M/M/1 batches, with the same retry and failover. The report gives per-flow throughput, delay, p95 delay and loss, and per-link and per-router load, each ± 95% CI, plus traffic and delay over time with failures marked, and a load heatmap of the topology.
   Three sample networks are included; networks can be exported and imported as JSON.

@@ -57,6 +57,17 @@ func TestOversizedBody(t *testing.T) {
 	}
 }
 
+func TestLargePDESReportBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"scenario":"` + strings.Repeat("x", MaxBody) + `"}`))
+	}))
+	defer srv.Close()
+	body, err := New(5*time.Second).Report(context.Background(), srv.URL, "b")
+	if err != nil || len(body) <= MaxBody {
+		t.Fatalf("report length %d, err %v; want valid report larger than 4 MiB", len(body), err)
+	}
+}
+
 func TestNon2xxCarriesNodeMessage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)

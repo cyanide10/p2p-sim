@@ -4,7 +4,7 @@ Observed from `node/internal/api`, `node/internal/batch`, `node/internal/dispatc
 
 ## Common Behavior
 
-- Node routes are `/health`, `/peers`, `/run`, `/status`, `/report`, and `/task`.
+- Node routes include `/health`, `/peers`, `/run`, `/status`, `/report`, `/task`, and the network/PDES endpoints documented below.
 - JSON responses use `Content-Type: application/json`. Error responses are JSON.
 - `/run` rejects unknown JSON fields and caps request bodies at 1 MiB. `/task` also has a 1 MiB cap.
 - The node has no authentication or TLS. Its security model assumes trusted peers and limits exposure at the network/deployment layer.
@@ -113,6 +113,14 @@ On success: `200 text/event-stream`. Each message is `data: <JSON>` with `type` 
 - `GET /status?batch_id=` and `GET /report?batch_id=` answer for network batches too. Status has the M/M/1 shape plus `"kind": "network"`. The report has `kind`, `verdict` (`PENDING` / `COMPLETE` / `FAIL`), `scenario`, `flows`, `links`, `routers` and `totals` as `id -> metric -> {n, mean, stddev, ci95_low, ci95_high, ci95_half_width}` (or `null`), `series` (per-bin mean and CI bands), `tasks_per_peer` and `timing.parallelism`.
 - `POST /netstream` body `{scenario, speed, seed?, start?}`: one replication in real time as Server-Sent Events. With `start` > 0 the simulator fast-forwards silently to that time and sends a `seek` event (failed elements, routes, queues, per-flow counters); the packets are identical to a run from t = 0 with the same seed. Events: `meta` (with routes), `send`, `hop`, `deliver`, `drop` (with reason), `failure` (with recomputed routes), `stats` (per-link and per-router load and queue, per-flow counters), `done` (with metrics), or `error`.
 - `POST /task` accepts an optional `network` field; the result then carries `network` metrics instead of the M/M/1 fields.
+
+## Partitioned network simulation (PDES)
+
+- `POST /pdes/plan` accepts `{scenario, parts}` and returns the deterministic router/host assignment, cut links, minimum lookahead, window count, and load. It validates the scenario and requested partition count through `netsim.py`.
+- `POST /pdesrun` accepts `{scenario, parts?, base_seed?, baseline?}`. `parts` defaults to the number of healthy nodes available to the coordinator; `base_seed` defaults to current Unix milliseconds; `baseline` defaults to `true`. A successful `202` response includes `{batch_id, status:"started", coordinator, base_seed, parts}`. An active PDES coordinator returns `409` to another start request.
+- `GET /status?batch_id=` and `GET /report?batch_id=` also serve PDES batches. Status reports `kind:"pdes"`, simulated time, windows, per-partition compute/wait/message/byte totals, and terminal state `complete` or `failed`. A failure report identifies `failed_node` and includes its error.
+- The coordinator's `/pdes/{run}/open`, `/step`, `/finish`, and `DELETE /pdes/{run}` endpoints host worker partitions. The coordinator routes lock-step window messages to these routes on selected peers; they are internal peer APIs, not user-facing launch endpoints. Partition requests are capped at 8 MiB and worker responses at 64 MiB.
+- PDES reports include the plan, partition timing, merged network metrics, and, when requested, serial-baseline metrics, equality result, and speedup.
 
 ## `POST /task`
 

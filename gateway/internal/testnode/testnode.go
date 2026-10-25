@@ -33,6 +33,7 @@ type Node struct {
 	statusCalls     int
 	streamBusy      bool
 	streamQueries   []string
+	pdesFailure     bool
 }
 
 type batch struct {
@@ -40,6 +41,7 @@ type batch struct {
 	reps  int
 	seed  int64
 	calls int
+	pdes  bool
 }
 
 func New(tb testing.TB, id string) *Node {
@@ -82,6 +84,8 @@ func (n *Node) Forget() { n.mu.Lock(); n.forget = true; n.mu.Unlock() }
 
 // SetSteps sets how many status calls a batch takes to complete.
 func (n *Node) SetSteps(steps int) { n.mu.Lock(); n.stepsToComplete = steps; n.mu.Unlock() }
+
+func (n *Node) SetPDESFailure(failed bool) { n.mu.Lock(); n.pdesFailure = failed; n.mu.Unlock() }
 
 // SetSees sets this node's reported view of a peer's health.
 func (n *Node) SetSees(peerID string, healthy bool) {
@@ -145,6 +149,10 @@ func (n *Node) serve(w http.ResponseWriter, r *http.Request) {
 		n.stream(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/netrun":
 		n.netrun(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/pdes/plan":
+		n.pdesPlan(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/pdesrun":
+		n.pdesrun(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/netstream":
 		n.netstream(w, r)
 	default:
@@ -216,6 +224,18 @@ func (n *Node) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (n *Node) statusBody(b *batch) map[string]any {
+	if b.pdes {
+		state, phase := "running", "partitioned"
+		if b.calls >= n.stepsToComplete {
+			state, phase = "complete", "complete"
+			if n.pdesFailure {
+				state = "failed"
+			}
+		}
+		return map[string]any{"kind": "pdes", "batch_id": b.id, "coordinator": n.ID,
+			"state": state, "phase": phase, "windows_done": min(b.calls, n.stepsToComplete),
+			"windows_total": n.stepsToComplete}
+	}
 	done := min(b.reps, b.reps*b.calls/max(1, n.stepsToComplete))
 	state, phase := "running", "distributed"
 	if b.calls >= n.stepsToComplete {
@@ -236,6 +256,13 @@ func (n *Node) report(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := n.statusBody(b)
+	if b.pdes {
+		write(w, 200, map[string]any{
+			"kind": "pdes", "batch_id": b.id, "coordinator": n.ID, "state": s["state"],
+			"phase": s["phase"], "base_seed": b.seed, "metrics": map[string]any{"count": 1},
+		})
+		return
+	}
 	verdict := "PENDING"
 	if s["state"] == "complete" {
 		verdict = "PASS"
@@ -279,6 +306,46 @@ func (n *Node) netrun(w http.ResponseWriter, r *http.Request) {
 	n.order = append(n.order, id)
 	write(w, 202, map[string]any{"batch_id": id, "status": "started", "coordinator": n.ID,
 		"replications": reps, "base_seed": 99, "peers": len(n.seen)})
+}
+
+func (n *Node) pdesPlan(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Scenario json.RawMessage `json:"scenario"`
+		Parts    int             `json:"parts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Scenario) == 0 {
+		write(w, 400, map[string]string{"error": "scenario and parts are required"})
+		return
+	}
+	write(w, 200, map[string]any{"ok": true, "parts": req.Parts, "assignment": map[string]int{"r1": 0}})
+}
+
+func (n *Node) pdesrun(w http.ResponseWriter, r *http.Request) {
+	var req map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req["scenario"] == nil {
+		write(w, 400, map[string]string{"error": "scenario is required"})
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.runRequests = append(n.runRequests, req)
+	if n.busy {
+		write(w, 409, map[string]string{"error": "a batch is already running on this node", "batch_id": "batch-existing"})
+		return
+	}
+	seed := int64(1700000000000)
+	if v, ok := req["base_seed"].(float64); ok {
+		seed = int64(v)
+	}
+	parts := len(n.seen)
+	if v, ok := req["parts"].(float64); ok {
+		parts = int(v)
+	}
+	id := fmt.Sprintf("pdes-%s-%d", n.ID, len(n.order)+1)
+	n.batches[id] = &batch{id: id, reps: 1, seed: seed, pdes: true}
+	n.order = append(n.order, id)
+	write(w, 202, map[string]any{"batch_id": id, "status": "started", "coordinator": n.ID,
+		"base_seed": seed, "parts": parts})
 }
 
 // netstream echoes the request body back as one event, then finishes.

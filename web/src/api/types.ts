@@ -4,9 +4,11 @@ export interface Peer {
 }
 
 export interface RunParameters {
-  /** "network" for network-scenario runs; absent for M/M/1. */
-  kind?: "network";
+  /** "network" for independent network copies; "pdes" for partitioned execution. */
+  kind?: "network" | "pdes";
   scenario?: import("../lib/network").Scenario;
+  parts?: number;
+  baseline?: boolean;
   replications: number;
   lambda: number;
   mu: number;
@@ -84,6 +86,30 @@ export interface NodeStatus {
   stale?: boolean;
   tasks?: TaskDetail[];
 }
+
+export interface PartitionTiming {
+  compute_s: number;
+  wait_s: number;
+  messages: number;
+  bytes: number;
+}
+
+export interface PDESStatus {
+  kind: "pdes";
+  batch_id: string;
+  coordinator: string;
+  state: "running" | "complete" | "failed";
+  phase: string;
+  simulated_time: number;
+  windows_done: number;
+  windows_total: number;
+  partitions: Record<string, PartitionTiming>;
+  failed_node?: string;
+  error?: string;
+  stale?: boolean;
+}
+
+export type RunStatus = NodeStatus | PDESStatus;
 
 export interface MetricComparison {
   n: number;
@@ -185,6 +211,55 @@ export interface NetworkReport {
   stale?: boolean;
 }
 
+export interface PartitionPlan {
+  ok: boolean;
+  parts: number;
+  assignment: Record<string, number>;
+  cut_links: string[];
+  lookahead: number;
+  windows: number;
+  load: number[];
+}
+
+export interface PDESMetrics {
+  duration: number;
+  flows: Record<string, Record<string, number | null>>;
+  links: Record<string, Record<string, number | null>>;
+  routers: Record<string, Record<string, number | null>>;
+  totals: Record<string, number | null>;
+  series: {
+    bin_width: number;
+    delivered_rate: number[];
+    dropped_rate: number[];
+    mean_delay: Array<number | null>;
+    flows: Record<string, number[]>;
+  };
+}
+
+export interface PDESReport {
+  kind: "pdes";
+  batch_id: string;
+  coordinator: string;
+  state: "running" | "complete" | "failed";
+  phase: string;
+  scenario: import("../lib/network").Scenario;
+  base_seed: number;
+  plan: PartitionPlan;
+  metrics?: PDESMetrics;
+  baseline_metrics?: PDESMetrics;
+  results_identical?: boolean;
+  first_difference?: string;
+  speedup?: number;
+  partitioned_wall_seconds: number;
+  baseline_wall_seconds?: number;
+  partitions: Record<string, PartitionTiming>;
+  failed_node?: string;
+  error?: string;
+  stale?: boolean;
+}
+
+export type RunReport = NodeReport | NetworkReport | PDESReport;
+
 export interface RunRecord {
   run_id: string;
   batch_id: string;
@@ -192,8 +267,8 @@ export interface RunRecord {
   created_at: string;
   params: RunParameters;
   state: RunState;
-  status: NodeStatus | null;
-  report: NodeReport | null;
+  status: RunStatus | null;
+  report: RunReport | null;
 }
 
 export interface RunCreated {
@@ -201,9 +276,10 @@ export interface RunCreated {
   batch_id: string;
   status: "started";
   coordinator: string;
-  replications: number;
+  replications?: number;
   base_seed: number;
-  peers: number;
+  peers?: number;
+  parts?: number;
 }
 
 export interface RunList {

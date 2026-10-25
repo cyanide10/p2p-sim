@@ -23,12 +23,13 @@ type Config struct {
 	ListenAddr string `yaml:"listen_addr"`
 
 	// Coordinating a batch.
-	RequestTimeout time.Duration `yaml:"request_timeout"` // per node→node POST /task
-	HealthTimeout  time.Duration `yaml:"health_timeout"`  // per GET /health probe
-	MaxAttempts    int           `yaml:"max_attempts"`    // total tries per task before it is marked failed
-	BackoffInitial time.Duration `yaml:"backoff_initial"` // first pause after a node failure
-	BackoffMax     time.Duration `yaml:"backoff_max"`     // cap for exponential backoff
-	PhaseTimeout   time.Duration `yaml:"phase_timeout"`   // upper bound for one dispatch phase of a batch
+	RequestTimeout time.Duration `yaml:"request_timeout"`   // per node→node POST /task
+	HealthTimeout  time.Duration `yaml:"health_timeout"`    // per GET /health probe
+	MaxAttempts    int           `yaml:"max_attempts"`      // total tries per task before it is marked failed
+	BackoffInitial time.Duration `yaml:"backoff_initial"`   // first pause after a node failure
+	BackoffMax     time.Duration `yaml:"backoff_max"`       // cap for exponential backoff
+	PhaseTimeout   time.Duration `yaml:"phase_timeout"`     // upper bound for one dispatch phase of a batch
+	PDEStepTimeout time.Duration `yaml:"pdes_step_timeout"` // per-window partition worker request
 
 	// Executing tasks.
 	SimTimeout         time.Duration `yaml:"sim_timeout"`          // per-subprocess limit; must be < request_timeout
@@ -60,6 +61,7 @@ func Default() Config {
 		BackoffInitial:     500 * time.Millisecond,
 		BackoffMax:         10 * time.Second,
 		PhaseTimeout:       time.Hour,
+		PDEStepTimeout:     30 * time.Second,
 		SimTimeout:         25 * time.Second,
 		MaxConcurrentTasks: 2,
 		PythonBin:          "python3",
@@ -108,12 +110,13 @@ func (c *Config) applyEnv(getenv func(string) string) error {
 		}
 	}
 	durations := map[string]*time.Duration{
-		"REQUEST_TIMEOUT": &c.RequestTimeout,
-		"HEALTH_TIMEOUT":  &c.HealthTimeout,
-		"BACKOFF_INITIAL": &c.BackoffInitial,
-		"BACKOFF_MAX":     &c.BackoffMax,
-		"PHASE_TIMEOUT":   &c.PhaseTimeout,
-		"SIM_TIMEOUT":     &c.SimTimeout,
+		"REQUEST_TIMEOUT":   &c.RequestTimeout,
+		"HEALTH_TIMEOUT":    &c.HealthTimeout,
+		"BACKOFF_INITIAL":   &c.BackoffInitial,
+		"BACKOFF_MAX":       &c.BackoffMax,
+		"PHASE_TIMEOUT":     &c.PhaseTimeout,
+		"SIM_TIMEOUT":       &c.SimTimeout,
+		"PDES_STEP_TIMEOUT": &c.PDEStepTimeout,
 	}
 	for key, dst := range durations {
 		if v := getenv(key); v != "" {
@@ -146,8 +149,8 @@ func (c Config) Validate() error {
 	switch {
 	case c.ListenAddr == "":
 		return errors.New("listen_addr must not be empty")
-	case c.RequestTimeout <= 0, c.HealthTimeout <= 0, c.PhaseTimeout <= 0:
-		return errors.New("request_timeout, health_timeout and phase_timeout must be > 0")
+	case c.RequestTimeout <= 0, c.HealthTimeout <= 0, c.PhaseTimeout <= 0, c.PDEStepTimeout <= 0:
+		return errors.New("request_timeout, health_timeout, phase_timeout and pdes_step_timeout must be > 0")
 	case c.MaxAttempts < 1:
 		return errors.New("max_attempts must be >= 1")
 	case c.BackoffInitial <= 0 || c.BackoffMax < c.BackoffInitial:

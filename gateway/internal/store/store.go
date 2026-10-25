@@ -22,6 +22,7 @@ var ErrNotFound = errors.New("run not found")
 const (
 	StateRunning         = "running"
 	StateComplete        = "complete"
+	StateFailed          = "failed"
 	StateCoordinatorLost = "coordinator_lost"
 	StateUnknown         = "unknown"
 )
@@ -40,6 +41,8 @@ type Params struct {
 	// topology and traffic are in Scenario and the M/M/1 fields are unused.
 	Kind     string          `json:"kind,omitempty"`
 	Scenario json.RawMessage `json:"scenario,omitempty"`
+	Parts    int             `json:"parts,omitempty"`
+	Baseline *bool           `json:"baseline,omitempty"`
 }
 
 type Run struct {

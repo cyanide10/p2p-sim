@@ -30,6 +30,17 @@ type Summary struct {
 	PeakRate       float64 `json:"peak_rate"`
 }
 
+// PartitionPlan is the deterministic network placement and lock-step timing plan.
+type PartitionPlan struct {
+	OK         bool           `json:"ok"`
+	Parts      int            `json:"parts"`
+	Assignment map[string]int `json:"assignment"`
+	CutLinks   []string       `json:"cut_links"`
+	Lookahead  float64        `json:"lookahead"`
+	Windows    int            `json:"windows"`
+	Load       []int          `json:"load"`
+}
+
 // Network runs sim/netsim.py for validation and live streams. Scenarios
 // travel on stdin; only numbers are passed as arguments.
 type Network struct {
@@ -68,6 +79,66 @@ func (n *Network) Validate(ctx context.Context, scenario []byte) (Summary, error
 		return Summary{}, errors.New("network validator returned no result")
 	}
 	return s, nil
+}
+
+// Plan validates a partitioned scenario and returns its deterministic plan.
+func (n *Network) Plan(ctx context.Context, scenario []byte, parts int) (PartitionPlan, error) {
+	if parts < 1 {
+		return PartitionPlan{}, &ScenarioError{Msg: "parts must be a positive integer"}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	var out []byte
+	args := []string{"--plan", "--parts", strconv.Itoa(parts)}
+	err := pipeLines(ctx, ctx, 15*time.Second, n.command(ctx, args...), scenario, func(line []byte) error {
+		out = append([]byte(nil), line...)
+		return nil
+	})
+	if err != nil {
+		msg := err.Error()
+		if i := strings.Index(msg, "invalid scenario: "); i >= 0 {
+			return PartitionPlan{}, &ScenarioError{Msg: msg[i+len("invalid scenario: "):]}
+		}
+		return PartitionPlan{}, err
+	}
+	var plan PartitionPlan
+	if err := json.Unmarshal(out, &plan); err != nil || !plan.OK {
+		return PartitionPlan{}, errors.New("network planner returned no result")
+	}
+	if plan.Parts != parts || plan.Lookahead <= 0 || plan.Windows < 1 ||
+		len(plan.Assignment) == 0 || len(plan.Load) != parts {
+		return PartitionPlan{}, errors.New("network planner returned an invalid plan")
+	}
+	return plan, nil
+}
+
+// Merge combines raw partition-owned state into the canonical network metrics.
+func (n *Network) Merge(ctx context.Context, scenario []byte, states []json.RawMessage) (json.RawMessage, error) {
+	input, err := json.Marshal(struct {
+		Scenario json.RawMessage   `json:"scenario"`
+		States   []json.RawMessage `json:"states"`
+	}{Scenario: scenario, States: states})
+	if err != nil {
+		return nil, fmt.Errorf("encode partition states: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var out []byte
+	err = pipeLines(ctx, ctx, 30*time.Second, n.command(ctx, "--merge"), input, func(line []byte) error {
+		out = append([]byte(nil), line...)
+		return nil
+	})
+	if err != nil {
+		msg := err.Error()
+		if i := strings.Index(msg, "invalid scenario: "); i >= 0 {
+			return nil, &ScenarioError{Msg: msg[i+len("invalid scenario: "):]}
+		}
+		return nil, err
+	}
+	if !json.Valid(out) {
+		return nil, errors.New("network merger returned invalid metrics JSON")
+	}
+	return json.RawMessage(out), nil
 }
 
 // Stream runs one network replication in real time (speed simulated seconds

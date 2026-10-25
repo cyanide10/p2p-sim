@@ -27,6 +27,7 @@ import (
 
 const (
 	maxRequestBody   = 1 << 20
+	maxPDESBody      = (4 << 20) + (64 << 10)
 	defaultListLimit = 50
 	maxListLimit     = 200
 	clusterFanout    = 8
@@ -58,6 +59,7 @@ func Handler(opts Options) http.Handler {
 	mux.HandleFunc("GET /api/config", s.config)
 	mux.HandleFunc("GET /api/cluster", s.cluster)
 	mux.HandleFunc("POST /api/runs", s.createRun)
+	mux.HandleFunc("POST /api/pdes/plan", s.planPDES)
 	mux.HandleFunc("GET /api/runs", s.listRuns)
 	mux.HandleFunc("GET /api/runs/{id}", s.getRun)
 	mux.HandleFunc("GET /api/runs/{id}/status", s.runStatus)
@@ -92,7 +94,7 @@ func (s *Server) cluster(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	var req runs.CreateRequest
-	if !decodeJSON(w, r, &req) {
+	if !decodeJSONLimit(w, r, &req, maxPDESBody, "4 MiB plus request metadata") {
 		return
 	}
 	created, err := s.opts.Runs.Create(r.Context(), req)
@@ -101,6 +103,41 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, created)
+}
+
+func (s *Server) planPDES(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Coordinator string          `json:"coordinator"`
+		Scenario    json.RawMessage `json:"scenario"`
+		Parts       int             `json:"parts"`
+	}
+	if !decodeJSONLimit(w, r, &req, maxPDESBody, "4 MiB plus request metadata") {
+		return
+	}
+	switch {
+	case len(req.Scenario) == 0 || string(req.Scenario) == "null":
+		writeError(w, http.StatusBadRequest, "scenario is required")
+		return
+	case len(req.Scenario) > 4<<20:
+		writeError(w, http.StatusRequestEntityTooLarge, "scenario is larger than 4 MiB")
+		return
+	case req.Parts < 1 || req.Parts > 2000:
+		writeError(w, http.StatusBadRequest, "parts must be a whole number from 1 to 2000")
+		return
+	}
+	peer, ok := s.opts.Peers.Lookup(req.Coordinator)
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown coordinator %q", req.Coordinator))
+		return
+	}
+	body, err := s.opts.Nodes.PDESPlan(r.Context(), peer.URL, nodeclient.PDESPlanRequest{
+		Scenario: req.Scenario, Parts: req.Parts,
+	})
+	if err != nil {
+		s.writeErr(w, r, err)
+		return
+	}
+	writeRaw(w, http.StatusOK, body)
 }
 
 func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
@@ -392,18 +429,23 @@ func (s *Server) recover(next http.Handler) http.Handler {
 // decodeJSON reads one JSON object, rejecting unknown fields, trailing data
 // and bodies over 1 MiB. It writes the error response itself.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody))
+	return decodeJSONLimit(w, r, dst, maxRequestBody, "1 MiB")
+}
+
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64, limitDescription string) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds 1 MiB")
+			writeError(w, http.StatusRequestEntityTooLarge, "request body exceeds "+limitDescription)
 		} else {
 			writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		}
 		return false
 	}
-	if dec.More() {
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: unexpected data after the object")
 		return false
 	}

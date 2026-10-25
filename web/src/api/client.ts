@@ -3,9 +3,9 @@ import type {
   GatewayConfig,
   HealthResponse,
   MockScenario,
-  NetworkReport,
-  NodeReport,
-  NodeStatus,
+  PartitionPlan,
+  RunReport,
+  RunStatus,
   RunCreated,
   RunList,
   RunParameters,
@@ -24,13 +24,15 @@ export interface ApiClient {
   createRun(coordinator: string, params: RunParameters): Promise<RunCreated>;
   listRuns(limit: number, offset: number): Promise<RunList>;
   getRun(runId: string): Promise<RunRecord>;
-  getStatus(runId: string): Promise<NodeStatus>;
-  getReport(runId: string): Promise<NodeReport | NetworkReport>;
+  getStatus(runId: string): Promise<RunStatus>;
+  getReport(runId: string): Promise<RunReport>;
   getHealth(): Promise<HealthResponse>;
   /** Streams one live replication run on params.node. Returns a function that stops it. */
   openTraffic(params: TrafficParams, onEvent: TrafficHandler): () => void;
   /** Starts a network-scenario batch distributed over the pool. */
   createNetworkRun(coordinator: string, scenario: Scenario, replications: number, baseSeed: number): Promise<RunCreated>;
+  planPDES(coordinator: string, scenario: Scenario, parts: number): Promise<PartitionPlan>;
+  createPDESRun(coordinator: string, scenario: Scenario, parts: number, baseSeed: number, baseline: boolean): Promise<RunCreated>;
   /** Streams one live run of a network scenario on node. Returns a function that stops it. */
   openNetworkTraffic(node: string, scenario: Scenario, speed: number, seed: number, start: number, onEvent: (event: NetStreamEvent) => void): () => void;
 }
@@ -96,11 +98,11 @@ export class HttpApiClient implements ApiClient {
   }
 
   getStatus(runId: string) {
-    return this.request<NodeStatus>(`/api/runs/${encodeURIComponent(runId)}/status`);
+    return this.request<RunStatus>(`/api/runs/${encodeURIComponent(runId)}/status`);
   }
 
   getReport(runId: string) {
-    return this.request<NodeReport>(`/api/runs/${encodeURIComponent(runId)}/report`);
+    return this.request<RunReport>(`/api/runs/${encodeURIComponent(runId)}/report`);
   }
 
   getHealth() {
@@ -116,6 +118,20 @@ export class HttpApiClient implements ApiClient {
     return this.request<RunCreated>("/api/runs", {
       method: "POST",
       body: JSON.stringify({ coordinator, kind: "network", scenario, replications, base_seed: baseSeed }),
+    });
+  }
+
+  planPDES(coordinator: string, scenario: Scenario, parts: number) {
+    return this.request<PartitionPlan>("/api/pdes/plan", {
+      method: "POST",
+      body: JSON.stringify({ coordinator, scenario, parts }),
+    });
+  }
+
+  createPDESRun(coordinator: string, scenario: Scenario, parts: number, baseSeed: number, baseline: boolean) {
+    return this.request<RunCreated>("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({ coordinator, kind: "pdes", scenario, parts, base_seed: baseSeed, baseline }),
     });
   }
 

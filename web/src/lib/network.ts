@@ -47,6 +47,21 @@ export interface Scenario {
   events: NetEvent[];
 }
 
+export interface GridOptions {
+  topology: "grid" | "torus";
+  rows: number;
+  columns: number;
+  hostsPerRouter: number;
+  flowCount: number;
+  flowRate: number;
+  bandwidth: number;
+  delay: number;
+  serviceRate: number;
+  buffer: number;
+  duration: number;
+  seed: number;
+}
+
 // Mirrors netsim.py's limits.
 export const LIMITS = { nodes: 60, links: 120, flows: 40, events: 60, duration: 3600, offered: 150_000, streamRate: 150 };
 export const FLOW_COLORS = 8; // categorical slots; later flows fold into gray
@@ -66,6 +81,125 @@ export function offeredPackets(sc: Scenario): number {
 export function nextId(prefix: string, taken: Iterable<string>): string {
   const used = new Set(taken);
   for (let i = 1; ; i += 1) if (!used.has(`${prefix}${i}`)) return `${prefix}${i}`;
+}
+
+/** Builds a repeatable grid/torus scenario and host-to-host traffic matrix. */
+export function generateGridScenario(options: GridOptions): Scenario {
+  const {
+    topology, rows, columns, hostsPerRouter, flowCount, flowRate, bandwidth,
+    delay, serviceRate, buffer, duration, seed,
+  } = options;
+  if (!Number.isInteger(rows) || rows < 2 || !Number.isInteger(columns) || columns < 2) {
+    throw new RangeError("Grid rows and columns must both be integers of at least 2.");
+  }
+  if (!Number.isInteger(hostsPerRouter) || hostsPerRouter < 1) {
+    throw new RangeError("Hosts per router must be a positive integer.");
+  }
+  if (rows * columns * (hostsPerRouter + 1) > LIMITS.nodes) throw new RangeError(`Generated topology exceeds ${LIMITS.nodes} nodes.`);
+  if (!Number.isInteger(flowCount) || flowCount < 1 || flowCount > LIMITS.flows) {
+    throw new RangeError(`Flow count must be an integer from 1 to ${LIMITS.flows}.`);
+  }
+  if (flowCount > (rows * columns * hostsPerRouter) * (rows * columns * hostsPerRouter - 1)) {
+    throw new RangeError("Flow count exceeds the number of distinct directed host pairs.");
+  }
+  if (![flowRate, bandwidth, delay, serviceRate, duration].every(Number.isFinite) ||
+      !(flowRate > 0) || !(bandwidth > 0) || !(delay >= 0) || !(serviceRate > 0) ||
+      !Number.isInteger(buffer) || buffer < 1 || !(duration > 0) || duration > LIMITS.duration) {
+    throw new RangeError("Rates, duration, delay, and buffer settings are outside the supported range.");
+  }
+  if (flowRate * flowCount * duration > LIMITS.offered) {
+    throw new RangeError(`Generated traffic exceeds ${LIMITS.offered.toLocaleString()} offered packets.`);
+  }
+  if (!Number.isSafeInteger(seed) || seed < 0) throw new RangeError("Generator seed must be a nonnegative safe integer.");
+
+  const nodes: NetNode[] = [];
+  const links: NetLink[] = [];
+  const routerIds: string[][] = [];
+  const hosts: string[] = [];
+  for (let row = 0; row < rows; row += 1) {
+    routerIds[row] = [];
+    for (let column = 0; column < columns; column += 1) {
+      const id = `r${row * columns + column + 1}`;
+      routerIds[row][column] = id;
+      nodes.push({
+        id, kind: "router",
+        x: 120 + (760 * column) / (columns - 1),
+        y: 90 + (460 * row) / (rows - 1),
+        service_rate: serviceRate, buffer,
+      });
+    }
+  }
+
+  let linkIndex = 1;
+  const linked = new Set<string>();
+  const addLink = (a: string, b: string) => {
+    const key = [a, b].sort().join(":");
+    if (linked.has(key)) return;
+    linked.add(key);
+    links.push({ id: `l${linkIndex++}`, a, b, bandwidth, delay, buffer });
+  };
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const here = routerIds[row][column];
+      if (column + 1 < columns) addLink(here, routerIds[row][column + 1]);
+      else if (topology === "torus") addLink(here, routerIds[row][0]);
+      if (row + 1 < rows) addLink(here, routerIds[row + 1][column]);
+      else if (topology === "torus") addLink(here, routerIds[0][column]);
+    }
+  }
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const router = nodes[row * columns + column];
+      for (let index = 0; index < hostsPerRouter; index += 1) {
+        const id = `h${hosts.length + 1}`;
+        hosts.push(id);
+        const angle = (2 * Math.PI * index) / hostsPerRouter;
+        nodes.push({
+          id, kind: "host",
+          x: router.x + 36 * Math.cos(angle),
+          y: router.y + 36 * Math.sin(angle),
+        });
+        addLink(router.id, id);
+      }
+    }
+  }
+  if (links.length > LIMITS.links) throw new RangeError(`Generated topology exceeds ${LIMITS.links} links.`);
+
+  let randomState = ((seed % 0x1_0000_0000) ^ Math.floor(seed / 0x1_0000_0000)) >>> 0;
+  if (randomState === 0) randomState = 0x6d2b79f5;
+  const random = () => {
+    randomState ^= randomState << 13;
+    randomState ^= randomState >>> 17;
+    randomState ^= randomState << 5;
+    return (randomState >>> 0) / 0x1_0000_0000;
+  };
+  const pairs = new Set<string>();
+  const flows: Flow[] = [];
+  let attempts = 0;
+  while (flows.length < flowCount && attempts < flowCount * 30) {
+    attempts += 1;
+    const srcIndex = Math.floor(random() * hosts.length);
+    let dstIndex = Math.floor(random() * (hosts.length - 1));
+    if (dstIndex >= srcIndex) dstIndex += 1;
+    const key = `${srcIndex}:${dstIndex}`;
+    if (pairs.has(key)) continue;
+    pairs.add(key);
+    flows.push({
+      id: `f${flows.length + 1}`, src: hosts[srcIndex], dst: hosts[dstIndex],
+      rate: flowRate, pattern: { type: "constant" },
+    });
+  }
+  if (flows.length < flowCount) {
+    for (let src = 0; src < hosts.length && flows.length < flowCount; src += 1) {
+      for (let dst = 0; dst < hosts.length && flows.length < flowCount; dst += 1) {
+        if (src === dst || pairs.has(`${src}:${dst}`)) continue;
+        pairs.add(`${src}:${dst}`);
+        flows.push({ id: `f${flows.length + 1}`, src: hosts[src], dst: hosts[dst], rate: flowRate, pattern: { type: "constant" } });
+      }
+    }
+  }
+  return { duration, nodes, links, flows, events: [] };
 }
 
 export function allIds(sc: Scenario): string[] {

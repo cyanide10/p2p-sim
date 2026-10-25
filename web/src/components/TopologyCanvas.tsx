@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { DROP_MS, dropLabel, flowSlot, HOP_MS, type NetLiveState, type Scenario } from "../lib/network";
+import { partitionClassForNode } from "../lib/pdes";
 
 export type Tool = "select" | "host" | "router" | "link" | "delete";
 export type Selection = { kind: "node" | "link"; id: string } | null;
@@ -10,7 +11,7 @@ const CONGESTED = 0.85;
 
 interface Props {
   scenario: Scenario;
-  mode: "edit" | "live" | "heat";
+  mode: "edit" | "live" | "heat" | "partition";
   tool?: Tool;
   selected?: Selection;
   pendingLink?: string | null;
@@ -25,6 +26,8 @@ interface Props {
   /** heat mode: mean utilization (0..1) per link, with an optional detail string for the tooltip */
   heat?: Record<string, { value: number; detail: string }>;
   routerHeat?: Record<string, { value: number; detail: string }>;
+  partitionAssignment?: Record<string, number>;
+  cutLinks?: string[];
 }
 
 /** Neutral light-to-dark ramp for load (0..1); hue is reserved for flows. */
@@ -34,7 +37,7 @@ export function loadColor(u: number): string {
 }
 
 export function TopologyCanvas(props: Props) {
-  const { scenario, mode, tool = "select", selected = null, pendingLink = null, live, now = 0, flowIndex = {}, heat, routerHeat } = props;
+  const { scenario, mode, tool = "select", selected = null, pendingLink = null, live, now = 0, flowIndex = {}, heat, routerHeat, partitionAssignment, cutLinks = [] } = props;
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<{ id: string; dx: number; dy: number } | null>(null);
   const nodes = new Map(scenario.nodes.map((n) => [n.id, n]));
@@ -107,10 +110,11 @@ export function TopologyCanvas(props: Props) {
         const width = load === null ? 3 : 3 + 9 * load;
         const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
         const isSel = selected?.kind === "link" && selected.id === l.id;
+        const isCut = cutLinks.includes(l.id);
         const title = mode === "heat" ? `${l.id}: ${heat?.[l.id]?.detail ?? "no data"}` :
-          `${l.id} · ${l.bandwidth} pkt/s · ${(l.delay * 1000).toFixed(1)} ms${load !== null ? ` · load ${(load * 100).toFixed(0)}%` : ""}${isDown ? " · DOWN" : ""}`;
+          `${l.id} · ${l.bandwidth} pkt/s · ${(l.delay * 1000).toFixed(1)} ms${load !== null ? ` · load ${(load * 100).toFixed(0)}%` : ""}${isDown ? " · DOWN" : ""}${isCut ? " · partition cut" : ""}`;
         return (
-          <g key={l.id} className={`topo-link ${isDown ? "is-down" : ""} ${isSel ? "is-selected" : ""}`} onPointerDown={(e) => onLinkDown(e, l.id)}>
+          <g key={l.id} className={`topo-link ${isDown ? "is-down" : ""} ${isSel ? "is-selected" : ""} ${isCut ? "is-cut" : ""}`} onPointerDown={(e) => onLinkDown(e, l.id)}>
             <title>{title}</title>
             <line className="topo-link-hit" x1={a.x} y1={a.y} x2={b.x} y2={b.y} />
             {isSel && <line className="topo-link-halo" x1={a.x} y1={a.y} x2={b.x} y2={b.y} />}
@@ -137,11 +141,12 @@ export function TopologyCanvas(props: Props) {
         const routerLive = mode === "live" ? live?.routers[n.id] : undefined;
         const routerLoad = mode === "heat" ? routerHeat?.[n.id] : undefined;
         const fillLoad = routerLive?.util ?? routerLoad?.value;
+        const partition = partitionAssignment?.[n.id];
         const title = n.kind === "router"
-          ? `${n.id} · router · ${n.service_rate} pkt/s · buffer ${n.buffer}${routerLive ? ` · queue ${routerLive.queue} · load ${(routerLive.util * 100).toFixed(0)}%` : ""}${routerLoad ? ` · ${routerLoad.detail}` : ""}${isDown ? " · DOWN" : ""}`
-          : `${n.id} · host`;
+          ? `${n.id} · router · ${n.service_rate} pkt/s · buffer ${n.buffer}${routerLive ? ` · queue ${routerLive.queue} · load ${(routerLive.util * 100).toFixed(0)}%` : ""}${routerLoad ? ` · ${routerLoad.detail}` : ""}${isDown ? " · DOWN" : ""}${partition !== undefined ? ` · partition ${partition}` : ""}`
+          : `${n.id} · host${partition !== undefined ? ` · partition ${partition}` : ""}`;
         return (
-          <g key={n.id} className={`topo-node topo-${n.kind} ${isDown ? "is-down" : ""} ${isSel ? "is-selected" : ""} ${isPending ? "is-pending" : ""}`}
+          <g key={n.id} className={`topo-node topo-${n.kind} ${isDown ? "is-down" : ""} ${isSel ? "is-selected" : ""} ${isPending ? "is-pending" : ""} ${partitionAssignment ? partitionClassForNode(n.id, partitionAssignment) : ""}`}
             transform={`translate(${n.x}, ${n.y})`} onPointerDown={(e) => onNodeDown(e, n.id)}>
             <title>{title}</title>
             {n.kind === "router"

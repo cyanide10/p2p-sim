@@ -9,6 +9,7 @@ import type {
   MockScenario,
   NodeReport,
   NodeStatus,
+  PartitionPlan,
   RunCreated,
   RunList,
   RunParameters,
@@ -205,6 +206,14 @@ export class MockApiClient implements ApiClient {
   // Network scenarios are simulated by netsim.py on the nodes; the mock has no simulator.
   async createNetworkRun(): Promise<RunCreated> {
     throw new ApiError("Network runs need the real nodes. Start the Docker stack and open the gateway (port 8090).", 501);
+  }
+
+  async planPDES(): Promise<PartitionPlan> {
+    throw new ApiError("Partition planning needs the real nodes. Start the Docker stack and open the gateway (port 8090).", 501);
+  }
+
+  async createPDESRun(): Promise<RunCreated> {
+    throw new ApiError("Partitioned runs need the real nodes. Start the Docker stack and open the gateway (port 8090).", 501);
   }
 
   openNetworkTraffic(_node: string, _scenario: unknown, _speed: number, _seed: number, _start: number, onEvent: (event: NetStreamEvent) => void) {

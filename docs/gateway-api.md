@@ -5,13 +5,13 @@ Status: implemented in `gateway/` (2026-10-04); behavior beyond this draft is re
 ## Common Rules
 
 - All API paths are under `/api`; `/healthz` is the liveness endpoint. Responses use JSON and errors use `{"error":"message"}` unless otherwise specified.
-- Reject unknown JSON fields. Cap request bodies at 1 MiB.
+- Reject unknown JSON fields. Request bodies are capped at 1 MiB, except `POST /api/runs` and `POST /api/pdes/plan`, which allow up to 4 MiB of scenario JSON plus request metadata.
 - The gateway binds to `127.0.0.1` by default. No CORS is needed for the same-origin SPA.
 - Optional bearer-token auth applies to `/api/*`, not `/healthz` or static assets. Do not embed the token in frontend JavaScript. A deployment that needs browser auth must supply it through a deliberate runtime mechanism.
 - A gateway run ID is the unpadded base64url encoding of the UTF-8 JSON array `[coordinator, batch_id]`. This is reversible, URL-path-safe, and unambiguous. The response still includes `coordinator` and the node's original `batch_id` as separate fields.
 - Request defaults are loaded by the gateway from its configured shared node config (default path `config/node.yaml`) or gateway built-in fallback values matching the node defaults. The gateway resolves omitted fields before forwarding and stores the resolved values. The configured defaults must match the nodes' effective defaults; the node API has no endpoint to verify them. Prefer the launch UI to submit every field explicitly.
 - Frontend and gateway validation must agree: replications integer 2..100,000; positive finite lambda, mu, sim_time, and tolerance; `lambda < mu`; finite warmup time `>= 0` and `< sim_time`; base seed `>= 0` and leaves room for all task seeds. Since JSON numbers consumed by JavaScript must remain exact, browser-submitted seeds are restricted to safe integers (`<= Number.MAX_SAFE_INTEGER - replications`).
-- `complete` means the node's `/status.state` is `complete`. A report verdict of `FAIL` is a statistical result, not gateway execution state. Current node behavior does not provide a separate failed batch state; do not infer one from the verdict.
+- `complete` means the node's `/status.state` is `complete`; PDES may also report a terminal `failed` state. A report verdict of `FAIL` is a statistical result, not gateway execution state; do not infer execution failure from the verdict.
 
 ## Endpoints
 
@@ -81,6 +81,12 @@ Pass node `400` and `409` status and error JSON through unchanged. Other downstr
 
 Network runs: send `kind: "network"` with `scenario` (and optional `replications`, `base_seed`); the gateway forwards to the node's `POST /netrun`. The stored `params` carry `kind` and `scenario`, and status, report and history work the same way. `GET /api/runs/{id}/report` then returns the network report shape (see `node-api-observed.md`).
 
+PDES runs: send `kind: "pdes"` with `scenario` (required, at most 4 MiB), and optional `parts` (1..2000), `base_seed` (nonnegative safe integer), and `baseline` (defaults to `true`). The gateway forwards these to `POST /pdesrun`; the returned `parts` is the number actually selected by the coordinator. The stored parameters retain the scenario, selected part count, seed, and baseline choice. Node `state: "failed"` is terminal and is stored as gateway state `failed`; its status and report remain available in history.
+
+### `POST /api/pdes/plan`
+
+Body `{coordinator, scenario, parts}` where scenario is at most 4 MiB and parts is 1..2000. Passes the request to the named node's `POST /pdes/plan` and returns its deterministic partition plan. Unknown coordinator: `400`; node validation and availability errors use the normal downstream error mapping.
+
 ### `POST /api/netstream`
 
 Body `{node, scenario, speed, seed?}`. Relays the named node's `POST /netstream` (only `{scenario, speed, seed}` is forwarded). Same error mapping as `/api/stream`.
@@ -119,7 +125,7 @@ Returns `200` JSON when the gateway process is alive. It does not assert that no
 
 Each stored run contains `run_id`, `batch_id`, `coordinator`, `created_at`, fully resolved request parameters including `base_seed`, `state`, latest status snapshot, and final report when captured. Initial state is `running`.
 
-- On node status `complete`, set gateway state to `complete` and fetch/store the final report. Keep report verdict separate from run state.
+- On node status `complete` or `failed`, set the matching gateway terminal state and fetch/store the final report. Keep report verdict separate from run state.
 - On repeated connection/timeout failures, mark `coordinator_lost` only after the configured threshold. A node `404` indicates it no longer recognizes the batch. If the coordinator later returns the batch, refresh the record and state.
 - Use `unknown` only when a persisted record cannot be interpreted or reconciled; do not use it as a synonym for report verdict `FAIL`.
 - Track running records at startup. Use at most one tracker per run and a global concurrency cap. Stop trackers on gateway shutdown.

@@ -29,6 +29,8 @@ type CreateRequest struct {
 	// only Replications and BaseSeed apply then.
 	Kind           string          `json:"kind"`
 	Scenario       json.RawMessage `json:"scenario"`
+	Parts          *int            `json:"parts"`
+	Baseline       *bool           `json:"baseline"`
 	Replications   *int            `json:"replications"`
 	Lambda         *float64        `json:"lambda"`
 	Mu             *float64        `json:"mu"`
@@ -178,6 +180,31 @@ func resolveNetwork(req CreateRequest) (store.Params, *int64, error) {
 	return p, req.BaseSeed, nil
 }
 
+func resolvePDES(req CreateRequest) (store.Params, *int64, error) {
+	baseline := true
+	if req.Baseline != nil {
+		baseline = *req.Baseline
+	}
+	params := store.Params{Kind: "pdes", Scenario: req.Scenario, Baseline: &baseline}
+	if req.Parts != nil {
+		params.Parts = *req.Parts
+	}
+	if req.BaseSeed != nil {
+		params.BaseSeed = *req.BaseSeed
+	}
+	switch {
+	case len(req.Scenario) == 0 || string(req.Scenario) == "null":
+		return params, nil, &ValidationError{"scenario is required for a pdes run"}
+	case len(req.Scenario) > 4<<20:
+		return params, nil, &ValidationError{"scenario is larger than 4 MiB"}
+	case req.Parts != nil && (params.Parts < 1 || params.Parts > 2000):
+		return params, nil, &ValidationError{"parts must be a whole number from 1 to 2000"}
+	case req.BaseSeed != nil && (*req.BaseSeed < 0 || *req.BaseSeed > maxSafeInteger):
+		return params, nil, &ValidationError{"base_seed must be a nonnegative safe integer"}
+	}
+	return params, req.BaseSeed, nil
+}
+
 // Create starts a batch on the requested coordinator and begins tracking it.
 func (m *Manager) Create(ctx context.Context, req CreateRequest) (Created, error) {
 	var params store.Params
@@ -193,6 +220,11 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Created, error
 		if params, seed, err = resolveNetwork(req); err != nil {
 			return Created{}, err
 		}
+	case "pdes":
+		var err error
+		if params, seed, err = resolvePDES(req); err != nil {
+			return Created{}, err
+		}
 	default:
 		return Created{}, &ValidationError{fmt.Sprintf("unknown run kind %q", req.Kind)}
 	}
@@ -206,6 +238,10 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Created, error
 		started, err = m.opts.Nodes.NetRun(ctx, peer.URL, nodeclient.NetRunRequest{
 			Scenario: params.Scenario, Replications: &params.Replications, BaseSeed: seed,
 		})
+	} else if params.Kind == "pdes" {
+		started, err = m.opts.Nodes.PDESRun(ctx, peer.URL, nodeclient.PDESRunRequest{
+			Scenario: params.Scenario, Parts: req.Parts, BaseSeed: seed, Baseline: params.Baseline,
+		})
 	} else {
 		started, err = m.opts.Nodes.Run(ctx, peer.URL, nodeclient.RunRequest{
 			Replications: &params.Replications, Lambda: &params.Lambda, Mu: &params.Mu,
@@ -217,7 +253,11 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Created, error
 		return Created{}, err
 	}
 	params.BaseSeed = started.BaseSeed
-	params.Replications = started.Replications
+	if params.Kind != "pdes" {
+		params.Replications = started.Replications
+	} else {
+		params.Parts = started.Parts
+	}
 	created := Created{RunID: EncodeRunID(peer.ID, started.BatchID), RunStarted: started}
 	created.Coordinator = peer.ID
 
@@ -335,8 +375,9 @@ func (m *Manager) pollOnce(run store.Run, failures *int, log *slog.Logger) bool 
 		return false
 	}
 	*failures = 0
-	if nodeState(status) == store.StateComplete {
-		m.finish(ctx, run, status, log)
+	state := nodeState(status)
+	if state == store.StateComplete || state == store.StateFailed {
+		m.finish(ctx, run, status, state, log)
 		return true
 	}
 	if err := m.opts.Store.Update(ctx, run.RunID, store.StateRunning, status, nil); err != nil {
@@ -348,7 +389,7 @@ func (m *Manager) pollOnce(run store.Run, failures *int, log *slog.Logger) bool 
 	return false
 }
 
-func (m *Manager) finish(ctx context.Context, run store.Run, status json.RawMessage, log *slog.Logger) {
+func (m *Manager) finish(ctx context.Context, run store.Run, status json.RawMessage, state string, log *slog.Logger) {
 	var report json.RawMessage
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -364,11 +405,11 @@ func (m *Manager) finish(ctx context.Context, run store.Run, status json.RawMess
 	if err != nil {
 		log.Error("batch complete but the final report could not be fetched", "err", err)
 	}
-	if err := m.opts.Store.Update(ctx, run.RunID, store.StateComplete, status, report); err != nil {
+	if err := m.opts.Store.Update(ctx, run.RunID, state, status, report); err != nil {
 		log.Error("store final report", "err", err)
 		return
 	}
-	log.Info("batch complete")
+	log.Info("batch reached terminal state", "state", state)
 }
 
 func (m *Manager) markLost(run store.Run, log *slog.Logger) bool {
@@ -410,7 +451,7 @@ func (m *Manager) Status(ctx context.Context, runID string) (json.RawMessage, er
 	if err != nil {
 		return nil, err
 	}
-	if run.State == store.StateComplete && run.Status != nil {
+	if (run.State == store.StateComplete || run.State == store.StateFailed) && run.Status != nil {
 		return withStale(run.Status, false) // final; the node may have evicted the batch
 	}
 	live, err := m.liveStatus(ctx, run)
@@ -440,7 +481,7 @@ func (m *Manager) Report(ctx context.Context, runID string) (json.RawMessage, er
 	if err != nil {
 		return nil, err
 	}
-	if run.State == store.StateComplete && run.Report != nil {
+	if (run.State == store.StateComplete || run.State == store.StateFailed) && run.Report != nil {
 		return withStale(run.Report, false)
 	}
 	live, err := m.liveReport(ctx, run)

@@ -1,11 +1,12 @@
 import { Activity, Check, CircleCheck, CircleX, Copy, History, RotateCcw, TriangleAlert, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, createApiClient } from "../api/client";
-import type { MetricComparison, MockScenario, NetworkReport, NodeReport, RunRecord } from "../api/types";
+import type { MetricComparison, MockScenario, NetworkReport, NodeReport, RunRecord, RunReport } from "../api/types";
 import { NetworkReportView } from "./NetworkReport";
+import { PDESReportView } from "./PDESReport";
 
-function isNetworkReport(report: NodeReport | NetworkReport): report is NetworkReport {
-  return (report as NetworkReport).kind === "network";
+function isNetworkReport(report: RunReport): report is NetworkReport {
+  return "kind" in report && report.kind === "network";
 }
 import { chartDomain } from "../lib/chart";
 import { formatDuration, formatNumber, formatPercent, formatSpeedup } from "../lib/format";
@@ -78,7 +79,7 @@ function SerialMatch({ report }: { report: NodeReport }) {
 export function ReportPage({ runId, scenario }: { runId: string; scenario: MockScenario }) {
   const api = useMemo(() => createApiClient(scenario), [scenario]);
   const [record, setRecord] = useState<RunRecord | null>(null);
-  const [report, setReport] = useState<NodeReport | NetworkReport | null>(null);
+  const [report, setReport] = useState<RunReport | null>(null);
   const [error, setError] = useState<{ message: string; status: number | null } | null>(null);
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
 
@@ -133,6 +134,9 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
 
   if (isNetworkReport(report)) {
     return <NetworkReportView report={report} runId={runId} api={api} />;
+  }
+  if ("kind" in report && report.kind === "pdes") {
+    return <PDESReportView report={report} runId={runId} />;
   }
   const n = report.mean_wait_time?.n ?? report.tasks.complete;
   const peerCounts = Object.entries(report.tasks_per_peer).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }));

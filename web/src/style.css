@@ -604,6 +604,47 @@ input:focus-visible { outline: 3px solid #e58a53; outline-offset: 1px; }
 .player-overlay:hover svg { background: #105942; }
 .net-results-title { margin-top: 8px; }
 
+.pdes-launch-panel { margin: 14px 0 18px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); }
+.pdes-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.pdes-panel-heading h2 { margin: 2px 0 0; font-family: Georgia, "Times New Roman", serif; font-size: 20px; font-weight: 500; }
+.pdes-generator-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 10px; }
+.pdes-generator-grid .net-field, .pdes-controls .net-field { min-width: 0; }
+.pdes-generator-grid input, .pdes-generator-grid select, .pdes-controls select { width: 100%; }
+.pdes-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 16px; margin-top: 14px; }
+.pdes-controls .toggle-row { flex: 1 1 240px; margin: 0; padding: 8px 0; border: 0; }
+.pdes-plan-note { margin: 10px 0 0; color: var(--muted); font-size: 11px; }
+.pdes-plan-summary { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--canvas); font-size: 11px; }
+.pdes-plan-summary strong { margin-right: 5px; color: var(--muted); text-transform: uppercase; }
+.partition-timing-list { display: grid; gap: 9px; margin-bottom: 24px; padding: 14px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); }
+.partition-timing-row { display: grid; grid-template-columns: 100px minmax(100px, 1fr) minmax(145px, auto); align-items: center; gap: 12px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.partition-time-track { display: flex; height: 13px; overflow: hidden; border-radius: 3px; background: var(--line); }
+.partition-time-compute, .partition-time-wait { display: block; height: 100%; min-width: 0; }
+.partition-time-wait { background: var(--amber-soft); }
+.partition-legend { display: flex; align-items: center; gap: 7px; margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+.partition-legend i { display: inline-block; width: 12px; height: 9px; border-radius: 2px; }
+.partition-legend .partition-time-compute { background: var(--peer-0); }
+.pdes-topology-preview { overflow: hidden; margin-bottom: 22px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); }
+.pdes-topology-preview .topology { display: block; width: 100%; max-height: 560px; }
+.topo-node.partition-0 .topo-shape { fill: color-mix(in srgb, var(--peer-0) 25%, var(--paper)); stroke: var(--peer-0); }
+.topo-node.partition-1 .topo-shape { fill: color-mix(in srgb, var(--peer-1) 25%, var(--paper)); stroke: var(--peer-1); }
+.topo-node.partition-2 .topo-shape { fill: color-mix(in srgb, var(--peer-2) 25%, var(--paper)); stroke: var(--peer-2); }
+.topo-node.partition-3 .topo-shape { fill: color-mix(in srgb, var(--peer-3) 25%, var(--paper)); stroke: var(--peer-3); }
+.topo-node.partition-4 .topo-shape { fill: color-mix(in srgb, var(--peer-4) 25%, var(--paper)); stroke: var(--peer-4); }
+.topo-node.partition-5 .topo-shape { fill: color-mix(in srgb, var(--peer-5) 25%, var(--paper)); stroke: var(--peer-5); }
+.topo-link.is-cut .topo-link-line { stroke: var(--critical); stroke-dasharray: 7 5; }
+.topo-link.is-cut .topo-link-label { fill: var(--critical); font-weight: 800; }
+.pdes-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 24px; }
+.pdes-summary-grid article { display: grid; gap: 6px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); }
+.pdes-summary-grid span { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+.pdes-summary-grid strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.pdes-total-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 8px; margin: 0 0 22px; }
+.pdes-total-grid > div { padding: 11px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+.pdes-total-grid dt { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+.pdes-total-grid dd { margin: 6px 0 0; font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pdes-metric-section { margin: 22px 0; }
+.pdes-metric-table { min-width: 720px; }
+.pdes-metric-table th:first-child, .pdes-metric-table td:first-child { text-align: left; }
+
 @media (max-width: 1100px) {
   .net-layout, .player-layout { grid-template-columns: minmax(0, 1fr); }
 }
@@ -615,6 +656,11 @@ input:focus-visible { outline: 3px solid #e58a53; outline-offset: 1px; }
   .net-btn { grid-column: 1 / -1; justify-content: center; }
   .net-live-head { grid-template-columns: auto minmax(0, 1fr); }
   .net-live-meta { grid-column: 2; }
+  .partition-timing-row { grid-template-columns: 58px minmax(60px, 1fr); }
+  .partition-timing-row > span { grid-column: 2; }
+  .pdes-controls { align-items: stretch; }
+  .pdes-controls > * { flex: 1 1 100%; }
+  .pdes-panel-heading { align-items: flex-start; }
 }
 
 @media (prefers-reduced-motion: reduce) {
