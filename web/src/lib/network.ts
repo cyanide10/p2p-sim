@@ -337,7 +337,61 @@ export const SAMPLES: Array<{ id: string; label: string; scenario: Scenario }> =
       events: [{ t: 100, target: "CD", action: "down" }, { t: 200, target: "CD", action: "up" }],
     },
   },
+  {
+    id: "isp",
+    label: "Regional ISP: core mesh, data center, peering, failures",
+    scenario: {
+      duration: 300,
+      nodes: [
+        // Core: four routers in a ring with one diagonal.
+        router("c1", 380, 250, 400, 100), router("c2", 620, 250, 400, 100), router("c3", 620, 420, 400, 100), router("c4", 380, 420, 400, 100),
+        // Data center, upstream peering router, and four access routers.
+        router("dc1", 500, 120, 350, 80), router("peer", 800, 335, 120, 30),
+        router("a1", 190, 200, 150, 40), router("a2", 190, 470, 150, 40), router("a3", 430, 570, 150, 40), router("a4", 640, 570, 150, 40),
+        // Servers in the data center, and the Internet beyond the peering link.
+        host("web", 360, 40), host("video", 500, 30), host("cdn", 640, 40), host("backup", 780, 110), host("inet", 920, 335),
+        // Customers behind the access routers.
+        host("lab", 60, 130), host("office", 60, 270), host("dorm", 60, 410), host("cafe", 60, 540),
+        host("home1", 360, 650), host("home2", 500, 650), host("iot", 600, 650), host("cam", 760, 640),
+      ],
+      links: [
+        link("c1c2", "c1", "c2", 250, 0.004, 80), link("c2c3", "c2", "c3", 250, 0.004, 80), link("c3c4", "c3", "c4", 250, 0.004, 80),
+        link("c4c1", "c4", "c1", 250, 0.004, 80), link("c1c3", "c1", "c3", 200, 0.006, 80),
+        link("dc1c1", "dc1", "c1", 300, 0.001, 80), link("dc1c2", "dc1", "c2", 300, 0.001, 80),
+        link("pc2", "peer", "c2", 60, 0.01, 40), link("pc3", "peer", "c3", 60, 0.01, 40),
+        link("transit", "peer", "inet", 28, 0.02, 30), // the bottleneck: saturates during the flash crowd
+        link("a1c1", "a1", "c1", 120, 0.002), link("a2c4", "a2", "c4", 120, 0.002), link("a1a2", "a1", "a2", 25, 0.008, 20),
+        link("a3c4", "a3", "c4", 120, 0.002), link("a4c3", "a4", "c3", 120, 0.002), link("a3a4", "a3", "a4", 60, 0.008, 30),
+        link("webl", "web", "dc1", 400, 0.0005), link("videol", "video", "dc1", 400, 0.0005), link("cdnl", "cdn", "dc1", 400, 0.0005),
+        link("backupl", "backup", "dc1", 400, 0.0005),
+        link("labl", "lab", "a1"), link("officel", "office", "a1"), link("dorml", "dorm", "a2"), link("cafel", "cafe", "a2"),
+        link("home1l", "home1", "a3"), link("home2l", "home2", "a3"), link("iotl", "iot", "a4"), link("caml", "cam", "a4"),
+      ],
+      flows: [
+        { id: "lab-web", src: "lab", dst: "web", rate: 12, pattern: { type: "constant" } },
+        { id: "web-lab", src: "web", dst: "lab", rate: 10, pattern: { type: "constant" } },
+        { id: "office-day", src: "office", dst: "web", rate: 18, pattern: { type: "schedule", interpolate: "linear", points: [{ t: 0, rate: 4 }, { t: 100, rate: 18 }, { t: 200, rate: 18 }, { t: 300, rate: 4 }] } },
+        { id: "dorm-video", src: "dorm", dst: "video", rate: 20, pattern: { type: "onoff", on_mean: 6, off_mean: 4 } },
+        { id: "video-dorm", src: "video", dst: "dorm", rate: 15, pattern: { type: "constant" } },
+        { id: "flash-crowd", src: "home1", dst: "inet", rate: 30, pattern: { type: "schedule", interpolate: "step", points: [{ t: 0, rate: 5 }, { t: 120, rate: 30 }, { t: 180, rate: 5 }] } },
+        { id: "office-inet", src: "office", dst: "inet", rate: 10, pattern: { type: "onoff", on_mean: 10, off_mean: 10 } },
+        { id: "inet-home2", src: "inet", dst: "home2", rate: 10, pattern: { type: "constant" } },
+        { id: "cafe-cdn", src: "cafe", dst: "cdn", rate: 8, pattern: { type: "onoff", on_mean: 3, off_mean: 6 } },
+        { id: "iot-cdn", src: "iot", dst: "cdn", rate: 5, pattern: { type: "constant" } },
+        { id: "cam-backup", src: "cam", dst: "backup", rate: 8, pattern: { type: "constant" } },
+      ],
+      events: [
+        { t: 70, target: "a1c1", action: "down" }, { t: 130, target: "a1c1", action: "up" }, // west uplink cut: reroute over a1-a2
+        { t: 150, target: "c2", action: "down" }, { t: 210, target: "c2", action: "up" }, // core router failure
+        { t: 240, target: "a3c4", action: "down" }, { t: 270, target: "a3c4", action: "up" }, // south uplink cut: reroute over a3-a4
+        { t: 255, target: "dc1c1", action: "down" }, { t: 285, target: "dc1c1", action: "up" }, // data-center uplink flap
+      ],
+    },
+  },
 ];
+
+/** The network the lab opens with when nothing is saved. */
+export const DEFAULT_SAMPLE = "isp";
 
 export function cloneScenario(sc: Scenario): Scenario {
   return JSON.parse(JSON.stringify(sc)) as Scenario;

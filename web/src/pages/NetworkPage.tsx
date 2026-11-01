@@ -7,17 +7,19 @@ import { NetworkPlayer } from "../components/NetworkPlayer";
 import { TopologyCanvas, type Selection, type Tool } from "../components/TopologyCanvas";
 import {
   checkScenario, cloneScenario, flowSlot, generateGridScenario, nextId, offeredPackets, parseScenario,
-  SAMPLES, toWire, type Flow, type FlowPattern, type GridOptions, type Scenario,
+  DEFAULT_SAMPLE, SAMPLES, toWire, type Flow, type FlowPattern, type GridOptions, type Scenario,
 } from "../lib/network";
 
-const STORAGE_KEY = "p2p-sim-network";
+// Bumped when the default network changes, so browsers holding the old
+// default open the new one.
+const STORAGE_KEY = "p2p-sim-network-v2";
 
 function loadSaved(): Scenario {
   try {
     const saved = parseScenario(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null"));
     if (saved) return saved;
   } catch { /* fall through to the sample */ }
-  return cloneScenario(SAMPLES[0].scenario);
+  return cloneScenario((SAMPLES.find((s) => s.id === DEFAULT_SAMPLE) ?? SAMPLES[0]).scenario);
 }
 
 /** Number input that lets the user type freely and commits only valid numbers. */
