@@ -250,6 +250,14 @@ type PDESPlanRequest struct {
 	Parts    int             `json:"parts,omitempty"`
 }
 
+// AttackRunRequest is the node's POST /attackrun body; it mirrors a PDES run.
+type AttackRunRequest struct {
+	Scenario json.RawMessage `json:"scenario"`
+	Parts    *int            `json:"parts,omitempty"`
+	BaseSeed *int64          `json:"base_seed,omitempty"`
+	Baseline *bool           `json:"baseline,omitempty"`
+}
+
 func (c *Client) PDESRun(ctx context.Context, base string, req PDESRunRequest) (RunStarted, error) {
 	var started RunStarted
 	payload, err := json.Marshal(req)
@@ -267,11 +275,37 @@ func (c *Client) PDESRun(ctx context.Context, base string, req PDESRunRequest) (
 }
 
 func (c *Client) PDESPlan(ctx context.Context, base string, req PDESPlanRequest) (json.RawMessage, error) {
+	body, err := c.plan(ctx, base+"/pdes/plan", req, "pdes")
+	return body, err
+}
+
+// AttackRun starts a partitioned threat-campaign run on the node at base.
+func (c *Client) AttackRun(ctx context.Context, base string, req AttackRunRequest) (RunStarted, error) {
+	var started RunStarted
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return started, err
+	}
+	body, err := c.doTimeout(ctx, http.MethodPost, base+"/attackrun", payload, c.timeout+15*time.Second)
+	if err == nil {
+		err = decode(body, &started)
+	}
+	if err == nil && started.BatchID == "" {
+		err = &Error{Kind: KindDecode, Message: "attackrun response has no batch_id"}
+	}
+	return started, err
+}
+
+func (c *Client) AttackPlan(ctx context.Context, base string, req PDESPlanRequest) (json.RawMessage, error) {
+	return c.plan(ctx, base+"/attack/plan", req, "attack")
+}
+
+func (c *Client) plan(ctx context.Context, target string, req PDESPlanRequest, label string) (json.RawMessage, error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.doTimeout(ctx, http.MethodPost, base+"/pdes/plan", payload, c.timeout+15*time.Second)
+	body, err := c.doTimeout(ctx, http.MethodPost, target, payload, c.timeout+15*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +314,7 @@ func (c *Client) PDESPlan(ctx context.Context, base string, req PDESPlanRequest)
 		return nil, err
 	}
 	if object == nil {
-		return nil, &Error{Kind: KindDecode, Message: "pdes plan response is not a JSON object"}
+		return nil, &Error{Kind: KindDecode, Message: label + " plan response is not a JSON object"}
 	}
 	return body, nil
 }

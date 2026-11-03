@@ -1,4 +1,5 @@
 import type { NetStreamEvent } from "../../lib/network";
+import type { AttackScenarioWire } from "../../lib/attack";
 import { generateTraffic, type TrafficParams } from "../../lib/traffic";
 import { ApiError, type ApiClient, type TrafficHandler } from "../client";
 import type {
@@ -214,6 +215,20 @@ export class MockApiClient implements ApiClient {
 
   async createPDESRun(): Promise<RunCreated> {
     throw new ApiError("Partitioned runs need the real nodes. Start the Docker stack and open the gateway (port 8090).", 501);
+  }
+
+  async planAttack(_coordinator: string, _scenario: AttackScenarioWire, _parts: number): Promise<PartitionPlan> {
+    throw new ApiError("Attack partition planning needs the real nodes. Start the Docker stack and open the gateway (port 8090).", 501);
+  }
+
+  async createAttackRun(
+    _coordinator: string,
+    _scenario: AttackScenarioWire,
+    _parts: number,
+    _baseSeed: number,
+    _baseline: boolean,
+  ): Promise<RunCreated> {
+    throw new ApiError("Worker-backed threat campaigns need the real nodes. Start the Docker stack and open the gateway (port 8090).", 501);
   }
 
   openNetworkTraffic(_node: string, _scenario: unknown, _speed: number, _seed: number, _start: number, onEvent: (event: NetStreamEvent) => void) {

@@ -135,6 +135,9 @@ func TestValidation(t *testing.T) {
 		"pdes seed":           {Coordinator: "node-1", Kind: "pdes", Scenario: json.RawMessage(`{}`), BaseSeed: ptr(int64(-1))},
 		"pdes scenario size": {Coordinator: "node-1", Kind: "pdes",
 			Scenario: json.RawMessage(`"` + strings.Repeat("x", (4<<20)+1) + `"`)},
+		"attack parts":    {Coordinator: "node-1", Kind: "attack", Scenario: json.RawMessage(`{}`), Parts: ptr(0)},
+		"attack seed":     {Coordinator: "node-1", Kind: "attack", Scenario: json.RawMessage(`{}`), BaseSeed: ptr(int64(-1))},
+		"attack scenario": {Coordinator: "node-1", Kind: "attack"},
 	}
 	for name, req := range cases {
 		var v *ValidationError
@@ -170,6 +173,36 @@ func TestPDESRunTracksAndPersistsParameters(t *testing.T) {
 	run := waitState(t, f.store, created.RunID, store.StateComplete)
 	if run.Params.Kind != "pdes" || string(run.Params.Scenario) != string(scenario) ||
 		run.Params.Parts != 2 || run.Params.Baseline == nil || *run.Params.Baseline || run.Params.BaseSeed != 42 {
+		t.Fatalf("stored params %+v", run.Params)
+	}
+}
+
+func TestAttackRunTracksAndPersistsParameters(t *testing.T) {
+	f := setup(t)
+	m := f.manager(t)
+	scenario := json.RawMessage(`{"kind":"ddos","nodes":[{"id":"dc","index":0,"role":"target","units":1}]}`)
+	created, err := m.Create(context.Background(), CreateRequest{
+		Coordinator: "node-3", Kind: "attack", Scenario: scenario, Parts: ptr(1),
+		BaseSeed: ptr(int64(9)), Baseline: ptr(false),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Parts != 1 || created.BaseSeed != 9 || created.Coordinator != "node-3" {
+		t.Fatalf("created %+v", created)
+	}
+	for _, node := range f.nodes[:2] {
+		if len(node.RunRequests()) != 0 {
+			t.Fatalf("non-coordinator %s received the campaign", node.ID)
+		}
+	}
+	sent := f.nodes[2].RunRequests()
+	if len(sent) != 1 || sent[0]["parts"] != float64(1) || sent[0]["base_seed"] != float64(9) || sent[0]["baseline"] != false {
+		t.Fatalf("node received %v", sent)
+	}
+	run := waitState(t, f.store, created.RunID, store.StateComplete)
+	if run.Params.Kind != "attack" || string(run.Params.Scenario) != string(scenario) ||
+		run.Params.Parts != 1 || run.Params.BaseSeed != 9 {
 		t.Fatalf("stored params %+v", run.Params)
 	}
 }

@@ -26,7 +26,8 @@ const maxSafeInteger = 1<<53 - 1
 type CreateRequest struct {
 	Coordinator string `json:"coordinator"`
 	// Kind "network" runs Scenario (a topology with traffic) instead of M/M/1;
-	// only Replications and BaseSeed apply then.
+	// "pdes" runs a partitioned network; "attack" runs a partitioned threat
+	// campaign. Only the partitioned kinds use Parts and Baseline.
 	Kind           string          `json:"kind"`
 	Scenario       json.RawMessage `json:"scenario"`
 	Parts          *int            `json:"parts"`
@@ -181,11 +182,21 @@ func resolveNetwork(req CreateRequest) (store.Params, *int64, error) {
 }
 
 func resolvePDES(req CreateRequest) (store.Params, *int64, error) {
+	return resolvePartitioned(req, "pdes", "pdes")
+}
+
+// resolveAttack checks a partitioned threat-campaign request. The node
+// validates the campaign itself with attacksim.py.
+func resolveAttack(req CreateRequest) (store.Params, *int64, error) {
+	return resolvePartitioned(req, "attack", "attack")
+}
+
+func resolvePartitioned(req CreateRequest, kind, label string) (store.Params, *int64, error) {
 	baseline := true
 	if req.Baseline != nil {
 		baseline = *req.Baseline
 	}
-	params := store.Params{Kind: "pdes", Scenario: req.Scenario, Baseline: &baseline}
+	params := store.Params{Kind: kind, Scenario: req.Scenario, Baseline: &baseline}
 	if req.Parts != nil {
 		params.Parts = *req.Parts
 	}
@@ -194,7 +205,7 @@ func resolvePDES(req CreateRequest) (store.Params, *int64, error) {
 	}
 	switch {
 	case len(req.Scenario) == 0 || string(req.Scenario) == "null":
-		return params, nil, &ValidationError{"scenario is required for a pdes run"}
+		return params, nil, &ValidationError{"scenario is required for a " + label + " run"}
 	case len(req.Scenario) > 4<<20:
 		return params, nil, &ValidationError{"scenario is larger than 4 MiB"}
 	case req.Parts != nil && (params.Parts < 1 || params.Parts > 2000):
@@ -225,6 +236,11 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Created, error
 		if params, seed, err = resolvePDES(req); err != nil {
 			return Created{}, err
 		}
+	case "attack":
+		var err error
+		if params, seed, err = resolveAttack(req); err != nil {
+			return Created{}, err
+		}
 	default:
 		return Created{}, &ValidationError{fmt.Sprintf("unknown run kind %q", req.Kind)}
 	}
@@ -242,6 +258,10 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Created, error
 		started, err = m.opts.Nodes.PDESRun(ctx, peer.URL, nodeclient.PDESRunRequest{
 			Scenario: params.Scenario, Parts: req.Parts, BaseSeed: seed, Baseline: params.Baseline,
 		})
+	} else if params.Kind == "attack" {
+		started, err = m.opts.Nodes.AttackRun(ctx, peer.URL, nodeclient.AttackRunRequest{
+			Scenario: params.Scenario, Parts: req.Parts, BaseSeed: seed, Baseline: params.Baseline,
+		})
 	} else {
 		started, err = m.opts.Nodes.Run(ctx, peer.URL, nodeclient.RunRequest{
 			Replications: &params.Replications, Lambda: &params.Lambda, Mu: &params.Mu,
@@ -253,10 +273,10 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Created, error
 		return Created{}, err
 	}
 	params.BaseSeed = started.BaseSeed
-	if params.Kind != "pdes" {
-		params.Replications = started.Replications
-	} else {
+	if params.Kind == "pdes" || params.Kind == "attack" {
 		params.Parts = started.Parts
+	} else {
+		params.Replications = started.Replications
 	}
 	created := Created{RunID: EncodeRunID(peer.ID, started.BatchID), RunStarted: started}
 	created.Coordinator = peer.ID

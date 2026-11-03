@@ -1,9 +1,10 @@
-import { Activity, CircleHelp, CircleX, Clock3, Network, RadioTower, RefreshCw, Share2 } from "lucide-react";
+import { Activity, CircleHelp, CircleX, Clock3, Network, RadioTower, RefreshCw, Share2, ShieldAlert } from "lucide-react";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createApiClient } from "./api/client";
 import { MOCK_SCENARIOS, type ClusterSnapshot, type GatewayConfig, type MockScenario, type RunCreated } from "./api/types";
 import { parseHash } from "./lib/format";
 import { startPolling } from "./lib/poll";
+import { AttackPage } from "./pages/AttackPage";
 import { LaunchPage } from "./pages/LaunchPage";
 import { LivePage } from "./pages/LivePage";
 import { NetworkPage } from "./pages/NetworkPage";
@@ -174,6 +175,7 @@ function App() {
         <nav className="primary-nav" aria-label="Primary navigation">
           <a className={activeRoute === "cluster" ? "active" : ""} href="#/cluster"><Network size={17} /><span>Cluster</span></a>
           <a className={activeRoute === "network" ? "active" : ""} href="#/network"><Share2 size={17} /><span>Network lab</span></a>
+          <a className={activeRoute === "attack" ? "active" : ""} href="#/attack"><ShieldAlert size={17} /><span>Threat lab</span></a>
           <a className={activeRoute === "traffic" ? "active" : ""} href="#/traffic"><RadioTower size={17} /><span>Live traffic</span></a>
           <a className={activeRoute === "launch" ? "active" : ""} href="#/launch"><Activity size={17} /><span>Launch run</span></a>
           <a className="nav-muted" href="#/history" aria-disabled="true" onClick={(event) => event.preventDefault()}><Clock3 size={17} /><span>History</span><small>SOON</small></a>
@@ -185,6 +187,7 @@ function App() {
         {activeRoute === "cluster" ? <ClusterPage scenario={scenario} mockEnabled={mockEnabled} />
           : activeRoute === "launch" ? <LaunchPage key={query.get("resubmit") ?? "new"} scenario={scenario} onStarted={handleRunStarted} resubmitRunId={query.get("resubmit")} />
           : activeRoute === "network" ? <NetworkPage scenario={scenario} mockEnabled={mockEnabled} />
+          : activeRoute === "attack" ? <AttackPage scenario={scenario} />
           : activeRoute === "traffic" ? <TrafficPage scenario={scenario} mockEnabled={mockEnabled} />
           : activeRoute === "live" && routeId ? <LivePage runId={routeId} scenario={scenario} mockEnabled={mockEnabled} />
           : activeRoute === "report" && routeId ? <ReportPage runId={routeId} scenario={scenario} />

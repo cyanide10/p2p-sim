@@ -21,7 +21,7 @@ A distributed discrete-event simulation platform built from four layers:
  Node pool (Go, node/) — N identical nodes, no permanent coordinator
         │  subprocess, JSON over stdin/stdout
         ▼
- Simulators (Python + SimPy, sim/)  simulate.py (M/M/1)  netsim.py (packet network)
+ Simulators (Python + SimPy, sim/)  simulate.py (M/M/1)  netsim.py (packet network)  attacksim.py (threat campaigns)
 ```
 
 **Core principles**
@@ -49,6 +49,7 @@ A distributed discrete-event simulation platform built from four layers:
 | `mm1` (default) | `POST /run` | N independent M/M/1 replications spread over the pool, checked against queueing theory; optional serial baseline for speedup | `simulate.py --seed …` |
 | `network` | `POST /netrun` | N independent replications of one packet-network scenario spread over the pool, aggregated with 95% CIs | `netsim.py --seed N` |
 | `pdes` | `POST /pdesrun` | **One** network simulation split into k partitions across nodes, synchronized conservatively in lock-step windows; optional k=1 baseline to check identical results and measure speedup | `netsim.py --plan`, `--partition`, `--merge` |
+| `attack` | `POST /attackrun` | **One** threat campaign split into k topology-token partitions across nodes in lock-step windows; `parts=1` is a single worker, and the merged samples match the browser model exactly | `attacksim.py --plan`, `--partition`, `--merge` |
 | live M/M/1 | `GET /stream` (SSE) | One replication paced to wall clock, streamed to the browser | `simulate.py --stream` |
 | live network | `POST /netstream` (SSE) | One network replication paced to wall clock, can start mid-run | `netsim.py --stream` |
 
@@ -160,6 +161,20 @@ receiver's past.
 per-bin delay values in canonical order, and calls `metrics()` on a fresh
 `Network`. The result is comparable byte-for-byte with a k=1 run.
 
+### 3.6 `sim/attacksim.py` — threat campaigns
+The attack model is analytic and shares the same CLI, planner and worker
+protocol as `netsim.py`. It turns a campaign scenario (`kind`, `duration`,
+`step`, `seed`, `scale`, `intensity`, `capacity`, `defense`, `phases`, `nodes`)
+into a fixed sample grid plus one `load`/`compromise` pair per topology token.
+The browser implements the same equations in `web/src/lib/attack.ts`, so a
+node result rebuilds the local presentation model exactly.
+
+Partitioning splits the topology tokens, not the campaign clock. Every worker
+advances the same windows in lock-step and records telemetry only for the
+tokens it owns; the campaign state is global, so `outbound` is always empty.
+`merge_partition_states` concatenates the per-token maps and emits the same
+metrics as a single worker, and `parts=1` is the ordinary single-worker path.
+
 ---
 
 ## 4. Node layer — `node/` (Go)
@@ -201,10 +216,14 @@ its own kind and passes other IDs to the next handler (`statusOrNext` /
 | POST | `/netrun` | `{scenario, replications, base_seed}` |
 | POST | `/pdesrun` | `{scenario, parts?, base_seed?, baseline?}` (`parts` defaults to the number of healthy nodes) |
 | POST | `/pdes/plan` | `{scenario, parts}` → plan preview |
+| POST | `/attackrun` | `{scenario, parts?, base_seed?, baseline?}` threat campaign (`parts=1` is one worker) |
+| POST | `/attack/plan` | `{scenario, parts}` → topology-token plan preview |
 | GET | `/status?batch_id=` / `/report?batch_id=` | any kind; defaults to the latest |
 | GET | `/pdes/status`, `/pdes/report` | PDES-specific |
+| GET | `/attack/status`, `/attack/report` | threat-campaign-specific |
 | POST | `/task` | node to node: one replication; 200, 400 sim error, 503 busy |
 | POST/DELETE | `/pdes/{run}/open|step|finish`, `DELETE /pdes/{run}` | node to node: partition host; bodies capped at 8 MiB |
+| POST/DELETE | `/attack/{run}/open|step|finish`, `DELETE /attack/{run}` | node to node: threat-campaign partition host |
 | GET | `/stream` | SSE live M/M/1 (ρ ≤ 1.5, λ×speed ≤ 200/s) |
 | POST | `/netstream` | SSE live network (≤ 150 packets/s) |
 | GET | `/health`, `/peers` | liveness; health of the peer list as seen from this node |
@@ -221,17 +240,17 @@ the largest of these plus a margin.
 
 | File | Role |
 |---|---|
-| `types.go` | `ArrivalRecord`, `StepRequest/Response`, `OpenRequest`, `FinishResponse`, `Plan` (= `sim.PartitionPlan`) |
-| `worker.go` | `ProcessWorker`: one `netsim.py --partition` subprocess per partition, one JSON line request and reply per exchange, honours context cancellation. Message cap 8 MiB, reply cap 64 MiB. |
+| `types.go` | `ArrivalRecord`, `StepRequest/Response`, `OpenRequest`, `FinishResponse`, `Plan` (= `sim.PartitionPlan`), and `Options` (kind, run-ID prefix, peer prefix, start path). |
+| `worker.go` | `ProcessWorker`: one `--partition` subprocess per partition (`netsim.py` or `attacksim.py`), one JSON line request and reply per exchange, honours context cancellation. Message cap 8 MiB, reply cap 64 MiB. |
 | `host.go` | `Host`: every node's partition sessions keyed by run id. `Open` acquires an Executor slot (so it can return 503) and starts the worker. `Step` and `Finish` forward to it. `Delete` kills it. A reaper kills sessions idle for 60 s, in case the coordinator vanished. |
 | `http.go` | Routes for host and coordinator (4.2) and the `PeerClient` used to call remote hosts. |
 | `coordinator.go` | `Manager` and `Run`: the coordination loop and status/report. |
 
 **Coordinator loop (`Manager.execute`)**
 1. `Start`: check which peers are healthy, set k (default: all healthy), plan
-   with `netsim.py --plan`, choose participants (partition 0 is **always the
-   coordinator itself**, called in-process; the rest are healthy peers in
-   peer-list order), then return 202.
+   with the configured simulator's `--plan`, choose participants (partition 0
+   is **always the coordinator itself**, called in-process; the rest are
+   healthy peers in peer-list order), then return 202.
 2. `openWorkers`: open all partitions in parallel.
 3. For each window `w`: `until = min(L·(w+1), duration)`. `stepWorkers` steps
    all partitions in parallel, each with its own `pdes_step_timeout`. Outbound
@@ -240,8 +259,8 @@ the largest of these plus a margin.
    list is sorted by `(arrive, link, flow, seq)`. Per-partition accounting:
    `compute_s` (reported by the worker), `wait_s` (slowest reply minus this
    partition's reply), and messages and bytes (counted at sender and receiver).
-4. `finishWorkers`, then `planner.Merge` (`netsim.py --merge`) produces the
-   merged metrics.
+4. `finishWorkers`, then `planner.Merge` (the simulator's `--merge`) produces
+   the merged metrics.
 5. If baseline is on: plan k=1, then open, step once to the full duration and
    finish it locally. `compareJSON` checks the canonical JSON and gives
    `results_identical` plus `first_difference` (a JSON path).
@@ -278,9 +297,9 @@ container, published as `127.0.0.1:8090`).
 | Method | Path |
 |---|---|
 | GET | `/healthz`, `/api/config`, `/api/cluster` |
-| POST | `/api/runs` `{kind: mm1|network|pdes, coordinator, …}` |
+| POST | `/api/runs` `{kind: mm1|network|pdes|attack, coordinator, …}` |
 | GET | `/api/runs`, `/api/runs/{id}`, `/api/runs/{id}/status`, `/api/runs/{id}/report` |
-| POST | `/api/pdes/plan` (passes through to a healthy node) |
+| POST | `/api/pdes/plan`, `/api/attack/plan` (pass through to a healthy node) |
 | GET | `/api/stream` (SSE proxy to a node's `/stream`) |
 | POST | `/api/netstream` (SSE proxy to `/netstream`) |
 
@@ -291,7 +310,7 @@ Full detail: `docs/gateway-api.md`.
 ## 7. GUI — `web/` (React + TypeScript + Vite)
 
 - **Routing:** hash-based, in `web/src/App.tsx`: `#/cluster`, `#/network`,
-  `#/traffic`, `#/launch` (`?resubmit=<run>`), `#/live/<run_id>`,
+  `#/attack`, `#/traffic`, `#/launch` (`?resubmit=<run>`), `#/live/<run_id>`,
   `#/report/<run_id>`.
 - **API:** `web/src/api/client.ts` defines the `ApiClient` interface, with a
   real HTTP implementation and `api/mock/MockApiClient.ts` (scripted scenarios
@@ -303,17 +322,24 @@ Full detail: `docs/gateway-api.md`.
     flows and failure events. Then watch live (`/api/netstream`), run on all
     nodes (`kind:"network"`) or run partitioned (`kind:"pdes"`, with a
     colour-coded partition preview from `/api/pdes/plan`).
+  - `AttackPage`: the Threat lab. Four deterministic campaigns (`lib/attack.ts`)
+    with an animated map (`components/AttackMap.tsx`), phase timeline, event log
+    and charts. Runs in the browser (offline), on one node worker, or as a PDES
+    campaign partitioned across healthy nodes via `/api/attack/plan` and
+    `kind:"attack"`; remote failures fall back to the local model.
   - `TrafficPage`: live single M/M/1 queue.
   - `LaunchPage`: M/M/1 batch form, coordinator picker, retry on 409.
   - `LivePage`: polls a run. It branches on `params.kind`: M/M/1 progress, the
-    network player (`components/NetworkPlayer.tsx`), or PDES windows and a
-    compute-vs-wait bar (`lib/pdes.ts` `partitionBreakdown`). On
-    `coordinator_lost` or `failed` it offers a resubmit (`lib/resubmit.ts`).
-  - `ReportPage`: branches on `report.kind`: M/M/1 report, `NetworkReport`, or
+    network player (`components/NetworkPlayer.tsx`), PDES windows and a
+    compute-vs-wait bar (`lib/pdes.ts` `partitionBreakdown`), or the same
+    window/timing view for an attack campaign. On `coordinator_lost` or
+    `failed` it offers a resubmit (`lib/resubmit.ts`).
+  - `ReportPage`: branches on `report.kind`: M/M/1 report, `NetworkReport`,
     `PDESReport` (speedup, identical-results badge, time breakdown, partition
-    map).
+    map), or `AttackReport` (campaign summary, partition placement and a peak
+    snapshot on the attack map).
 - **Helpers:** `lib/poll.ts`, `lib/stats.ts`, `lib/validation.ts`,
-  `lib/chart.ts`, `lib/format.ts`, `lib/traffic.ts`.
+  `lib/chart.ts`, `lib/format.ts`, `lib/traffic.ts`, `lib/attack.ts`.
 
 ---
 
@@ -378,6 +404,7 @@ End-to-end and failure scripts: `scripts/demo.sh`, `scripts/kill-node-test.sh`,
 | Change | Touch |
 |---|---|
 | New network model feature | `sim/netsim.py` (`Network`, `validate`, `metrics`, `partition_state`, `merge_partition_states`) + `sim/test_netsim.py` + `web/src/api/types.ts` / `lib/network.ts` |
+| Threat campaign feature | `sim/attacksim.py` + `sim/test_attacksim.py`, then mirror the equations in `web/src/lib/attack.ts` and update `web/src/pages/AttackPage.tsx` |
 | New node endpoint | `node/internal/api/` or `pdes/http.go`, wired in `node/cmd/node/main.go` |
 | New run kind | node manager + handler, `gateway/internal/runs` (resolve and Create), `nodeclient`, `store.Params`, GUI `client.ts`, Live/Report branches |
 | Limits | `netsim.py` constants (normal and `partitioned=True`), `web/src/lib/network.ts` `LIMITS`, gateway size caps in `runs.go` |

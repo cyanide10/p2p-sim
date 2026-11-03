@@ -60,6 +60,7 @@ func Handler(opts Options) http.Handler {
 	mux.HandleFunc("GET /api/cluster", s.cluster)
 	mux.HandleFunc("POST /api/runs", s.createRun)
 	mux.HandleFunc("POST /api/pdes/plan", s.planPDES)
+	mux.HandleFunc("POST /api/attack/plan", s.planAttack)
 	mux.HandleFunc("GET /api/runs", s.listRuns)
 	mux.HandleFunc("GET /api/runs/{id}", s.getRun)
 	mux.HandleFunc("GET /api/runs/{id}/status", s.runStatus)
@@ -106,6 +107,14 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) planPDES(w http.ResponseWriter, r *http.Request) {
+	s.planPartitioned(w, r, false)
+}
+
+func (s *Server) planAttack(w http.ResponseWriter, r *http.Request) {
+	s.planPartitioned(w, r, true)
+}
+
+func (s *Server) planPartitioned(w http.ResponseWriter, r *http.Request, attack bool) {
 	var req struct {
 		Coordinator string          `json:"coordinator"`
 		Scenario    json.RawMessage `json:"scenario"`
@@ -130,9 +139,14 @@ func (s *Server) planPDES(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown coordinator %q", req.Coordinator))
 		return
 	}
-	body, err := s.opts.Nodes.PDESPlan(r.Context(), peer.URL, nodeclient.PDESPlanRequest{
-		Scenario: req.Scenario, Parts: req.Parts,
-	})
+	planReq := nodeclient.PDESPlanRequest{Scenario: req.Scenario, Parts: req.Parts}
+	var body json.RawMessage
+	var err error
+	if attack {
+		body, err = s.opts.Nodes.AttackPlan(r.Context(), peer.URL, planReq)
+	} else {
+		body, err = s.opts.Nodes.PDESPlan(r.Context(), peer.URL, planReq)
+	}
 	if err != nil {
 		s.writeErr(w, r, err)
 		return

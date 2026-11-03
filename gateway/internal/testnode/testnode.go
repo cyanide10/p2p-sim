@@ -37,11 +37,12 @@ type Node struct {
 }
 
 type batch struct {
-	id    string
-	reps  int
-	seed  int64
-	calls int
-	pdes  bool
+	id     string
+	reps   int
+	seed   int64
+	calls  int
+	pdes   bool
+	attack bool
 }
 
 func New(tb testing.TB, id string) *Node {
@@ -153,6 +154,10 @@ func (n *Node) serve(w http.ResponseWriter, r *http.Request) {
 		n.pdesPlan(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/pdesrun":
 		n.pdesrun(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/attack/plan":
+		n.pdesPlan(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/attackrun":
+		n.attackrun(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/netstream":
 		n.netstream(w, r)
 	default:
@@ -224,7 +229,11 @@ func (n *Node) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (n *Node) statusBody(b *batch) map[string]any {
-	if b.pdes {
+	if b.pdes || b.attack {
+		kind := "pdes"
+		if b.attack {
+			kind = "attack"
+		}
 		state, phase := "running", "partitioned"
 		if b.calls >= n.stepsToComplete {
 			state, phase = "complete", "complete"
@@ -232,7 +241,7 @@ func (n *Node) statusBody(b *batch) map[string]any {
 				state = "failed"
 			}
 		}
-		return map[string]any{"kind": "pdes", "batch_id": b.id, "coordinator": n.ID,
+		return map[string]any{"kind": kind, "batch_id": b.id, "coordinator": n.ID,
 			"state": state, "phase": phase, "windows_done": min(b.calls, n.stepsToComplete),
 			"windows_total": n.stepsToComplete}
 	}
@@ -256,9 +265,13 @@ func (n *Node) report(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := n.statusBody(b)
-	if b.pdes {
+	if b.pdes || b.attack {
+		kind := "pdes"
+		if b.attack {
+			kind = "attack"
+		}
 		write(w, 200, map[string]any{
-			"kind": "pdes", "batch_id": b.id, "coordinator": n.ID, "state": s["state"],
+			"kind": kind, "batch_id": b.id, "coordinator": n.ID, "state": s["state"],
 			"phase": s["phase"], "base_seed": b.seed, "metrics": map[string]any{"count": 1},
 		})
 		return
@@ -343,6 +356,35 @@ func (n *Node) pdesrun(w http.ResponseWriter, r *http.Request) {
 	}
 	id := fmt.Sprintf("pdes-%s-%d", n.ID, len(n.order)+1)
 	n.batches[id] = &batch{id: id, reps: 1, seed: seed, pdes: true}
+	n.order = append(n.order, id)
+	write(w, 202, map[string]any{"batch_id": id, "status": "started", "coordinator": n.ID,
+		"base_seed": seed, "parts": parts})
+}
+
+// attackrun accepts a partitioned threat campaign; it progresses like PDES.
+func (n *Node) attackrun(w http.ResponseWriter, r *http.Request) {
+	var req map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req["scenario"] == nil {
+		write(w, 400, map[string]string{"error": "scenario is required"})
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.runRequests = append(n.runRequests, req)
+	if n.busy {
+		write(w, 409, map[string]string{"error": "a batch is already running on this node", "batch_id": "batch-existing"})
+		return
+	}
+	seed := int64(1700000000000)
+	if v, ok := req["base_seed"].(float64); ok {
+		seed = int64(v)
+	}
+	parts := len(n.seen)
+	if v, ok := req["parts"].(float64); ok {
+		parts = int(v)
+	}
+	id := fmt.Sprintf("attack-%s-%d", n.ID, len(n.order)+1)
+	n.batches[id] = &batch{id: id, reps: 1, seed: seed, attack: true}
 	n.order = append(n.order, id)
 	write(w, 202, map[string]any{"batch_id": id, "status": "started", "coordinator": n.ID,
 		"base_seed": seed, "parts": parts})

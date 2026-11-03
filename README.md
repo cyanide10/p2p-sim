@@ -83,6 +83,7 @@ docker compose -f docker-compose.yml -f docker-compose.web.yml up --build   # 3 
   - **Run on all nodes:** N independent copies (different seeds) are spread over every node, as with M/M/1 batches, with the same retry and failover. The report gives per-flow throughput, delay, p95 delay and loss, and per-link and per-router load, each ± 95% CI, plus traffic and delay over time with failures marked, and a load heatmap of the topology.
   Three sample networks are included; networks can be exported and imported as JSON.
   - **Playback everywhere:** the live view, the progress page of a cluster run and its report all have a player with play/pause, a time slider, speed and a copy picker. Seeking restarts the copy on a node from that moment; a seed fixes every packet, so replaying copy *k* shows exactly the packets that went into the results.
+- **Threat lab:** a deterministic attack theater for four campaigns (volumetric DDoS, SYN flood, ransomware worm and data exfiltration). Tune botnet or estate size, intensity, capacity, defensive posture and seed, then scrub, pause and replay the incident: an animated attack map, target posture, threat index, campaign phases, an event log, offered load vs capacity and impact vs availability. Pick where the campaign runs: the in-browser model (offline, instant), one node worker, or a PDES pool that partitions the topology tokens across healthy nodes and advances the same campaign windows in lock-step. Remote runs fall back to the local model if a node or the pool is unavailable, so the lab still demos without a cluster.
 - **Live traffic:** watch packets move through one simulated router queue in real time. Pick a node, λ, μ and a playback speed; that node runs the SimPy model paced to the wall clock and streams every arrival, service start and delivery to the browser. Live charts show packets in system and per-packet delay against M/M/1 theory (L and W). Presets cover light, busy and overloaded (ρ > 1) traffic.
 - **Cluster:** health, latency and each node's view of its peers.
 - **Launch run:** parameters, coordinator choice, live ρ / W / L preview, and a "try another node" action when the chosen node is busy (409).
@@ -119,7 +120,7 @@ and a unique `NODE_ID` that matches its entry.
 ## Tests
 
 ```bash
-cd sim && ../.venv/bin/python -m pytest -q     # SimPy models: M/M/1, M/D/1, network (routing, failures, traffic patterns), CLI contracts
+cd sim && ../.venv/bin/python -m pytest -q     # SimPy models: M/M/1, M/D/1, network (routing, failures, traffic patterns), attack campaigns, CLI contracts
 cd node && go test -race ./...                 # stats, config, dispatch/retry/busy, routing, worker, API
 cd web && npm run typecheck && npm test        # GUI: validation, stats, mock run timeline
 cd gateway && go test -race ./...              # gateway: config, node client, cluster, store, tracking, HTTP (fake nodes)
@@ -130,6 +131,10 @@ None of the Go tests need Docker, a network, or Python.
 ## API (every node, port 8000)
 
 Network scenarios (`sim/netsim.py`, JSON on stdin): `POST /netrun {scenario, replications, base_seed}` starts a distributed network batch (tracked through the same `/status` and `/report` with its `batch_id`); `POST /netstream {scenario, speed, seed, start}` streams one live network replication (from simulated time `start`, after fast-forwarding to it) as Server-Sent Events. Limits: 60 nodes, 120 links, 40 flows, 60 failure events, at most 150,000 offered packets per replication, and 150 packets per second when streaming.
+
+Partitioned network runs (`sim/netsim.py --plan/--partition/--merge`): `POST /pdes/plan {scenario, parts}` returns the deterministic placement, lookahead and window count; `POST /pdesrun {scenario, parts, base_seed, baseline}` starts a lock-step run and reports through `/pdes/status` and `/pdes/report`.
+
+Threat campaigns (`sim/attacksim.py`, same CLI contract): `POST /attack/plan {scenario, parts}` plans topology-token placement; `POST /attackrun {scenario, parts, base_seed, baseline}` starts a campaign, with `parts=1` for a single worker. Status and report come from `/attack/status` and `/attack/report` and carry `"kind":"attack"`. The campaign scenario is `{kind, duration, step, seed, scale, intensity, capacity, defense, phases, nodes}`, where each node token is `{id, index, role, units}`. Limits: 500 topology tokens, 3600 simulated seconds, 200,000 samples.
 
 `GET /stream?lambda=&mu=&duration=&speed=&seed=` runs one live replication on this node and streams packet events as Server-Sent Events (one JSON object per `data:` line; see `simulate.py --stream`). Limits: ρ ≤ 1.5, duration ≤ 3600, λ × speed ≤ 200 packets per second. A stream uses one of the node's simulation slots, so a busy node answers 503.
 
@@ -166,14 +171,11 @@ python3 sim/simulate.py --seed 42007 --lam 0.8 --mu 1.0 --sim-time 10000 --warmu
 - **The bridge:** a subprocess plus a JSON contract. Each side can be tested
   without the other.
 
-### Why independent replications, not PDES
+### Replications and partitioned (PDES) execution
 
-- **Why it works:** replications are embarrassingly parallel, so nodes never need
-  causality-preserving synchronization or rollback.
-- **What a failure costs:** a dead node costs one reassigned task.
-- **Why duplicates are safe:** a seed fully determines its result, so running a
-  task twice is harmless. That is why no leader election is needed. Any node can
-  coordinate, and a lost batch is simply resubmitted.
+- **Independent replications** are the default for M/M/1 and network batches: they are embarrassingly parallel, so nodes never need causality-preserving synchronization or rollback. A dead node costs one reassigned task, and a seed fully determines its result, so duplicates are harmless. Any node can coordinate, and a lost batch is resubmitted.
+- **Partitioned (PDES)** execution splits one scenario's entities across nodes and advances them through fixed lookahead windows. The coordinator fans out each window, exchanges the resulting cross-partition records, then releases the next window. The network lab uses it for router/link partitions; the threat lab partitions topology tokens. `parts=1` is a normal single-worker run.
+- **The same merge is the oracle:** merging partition state must reproduce the single-run metrics exactly. Both PDES reports include a serial/partitioned match check and, when the serial baseline is enabled, a wall-clock speedup.
 
 ### Dispatch
 
@@ -253,7 +255,7 @@ set of nodes. These defaults limit exposure:
 
 ```
 node/        cmd/node, internal/{api,batch,config,dispatch,netbatch,peers,sim,stats,task,worker}, Dockerfile
-sim/         simulate.py (M/M/1), netsim.py (networks), tests, requirements*.txt
+sim/         simulate.py (M/M/1), netsim.py (networks), attacksim.py (threat campaigns), tests, requirements*.txt
 config/      peers.yaml, peers.4.yaml, node.yaml
 gateway/     cmd/gateway, internal/{config,nodeclient,aggregate,store,runs,server,testnode}, webui/, Dockerfile
 web/         GUI (React + Vite): src/{api,pages,components,lib}, Dockerfile (mock preview)

@@ -122,6 +122,13 @@ On success: `200 text/event-stream`. Each message is `data: <JSON>` with `type` 
 - The coordinator's `/pdes/{run}/open`, `/step`, `/finish`, and `DELETE /pdes/{run}` endpoints host worker partitions. The coordinator routes lock-step window messages to these routes on selected peers; they are internal peer APIs, not user-facing launch endpoints. Partition requests are capped at 8 MiB and worker responses at 64 MiB.
 - PDES reports include the plan, partition timing, merged network metrics, and, when requested, serial-baseline metrics, equality result, and speedup.
 
+## Partitioned threat campaigns
+
+- `POST /attack/plan` accepts `{scenario, parts}` and returns the deterministic topology-token assignment, window count, lookahead and load through `attacksim.py --plan`. The scenario is `{kind, duration, step, seed, scale, intensity, capacity, defense, phases, nodes}`; each node is `{id, index, role, units}`.
+- `POST /attackrun` accepts `{scenario, parts?, base_seed?, baseline?}` and starts a lock-step campaign. `parts: 1` runs one worker; larger values split the topology tokens across healthy nodes. A successful `202` includes `{batch_id, status:"started", coordinator, base_seed, parts}`; an active campaign coordinator returns `409`.
+- `GET /attack/status` and `GET /attack/report` serve the campaign. Status reports `kind:"attack"`, simulated time, windows and per-partition timing; the report echoes the scenario and returns merged `metrics` with `samples` and `summary`, plus the optional serial-baseline equality result and speedup.
+- The coordinator's `/attack/{run}/open`, `/step`, `/finish`, and `DELETE /attack/{run}` endpoints host the worker partitions. Workers own disjoint topology tokens and return no outbound records; the coordinator merges their node maps so the pooled result matches a single-worker run exactly.
+
 ## `POST /task`
 
 Node-to-node request:

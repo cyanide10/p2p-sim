@@ -81,8 +81,10 @@ func run(logger *slog.Logger) error {
 	defer stop()
 
 	// Executing side.
-	// netsim.py sits next to simulate.py.
-	netScript := filepath.Join(filepath.Dir(cfg.SimScript), "netsim.py")
+	// netsim.py and attacksim.py sit next to simulate.py.
+	simDir := filepath.Dir(cfg.SimScript)
+	netScript := filepath.Join(simDir, "netsim.py")
+	attackScript := filepath.Join(simDir, "attacksim.py")
 	runner := &sim.SimRunner{
 		Cmd:       sim.ExecCommandRunner{},
 		Python:    cfg.PythonBin,
@@ -116,6 +118,16 @@ func run(logger *slog.Logger) error {
 	defer pdesHost.Close()
 	pdesManager := pdes.NewManager(ctx, netsim, pdesHost, peerList, nodeID, client,
 		pdes.NewPeerClient(cfg.RequestTimeout), cfg.PDEStepTimeout, cfg.PhaseTimeout)
+	attackOpts := pdes.Options{
+		Kind: "attack", RunPrefix: "attack", EndpointPrefix: "/attack", StartPath: "/attackrun",
+	}
+	attackSim := &sim.Network{Python: cfg.PythonBin, Script: attackScript}
+	attackHost := pdes.NewHost(ctx, (pdes.ProcessFactory{Python: cfg.PythonBin, Script: attackScript}).New,
+		executor, 60*time.Second)
+	defer attackHost.Close()
+	attackManager := pdes.NewManagerWithOptions(ctx, attackSim, attackHost, peerList, nodeID, client,
+		pdes.NewPeerClientWithPrefix(cfg.RequestTimeout, attackOpts.EndpointPrefix),
+		cfg.PDEStepTimeout, cfg.PhaseTimeout, attackOpts)
 
 	// POST /task can take up to SimTimeout; GET /peers up to HealthTimeout.
 	writeTimeout := cfg.SimTimeout + 5*time.Second
@@ -129,9 +141,11 @@ func run(logger *slog.Logger) error {
 	streamer := &sim.Streamer{Python: cfg.PythonBin, Script: cfg.SimScript}
 	routes := http.NewServeMux()
 	routes.Handle("GET /stream", api.StreamHandler(streamer, executor, nodeID, logger))
-	routes.Handle("/", pdes.NewHandler(pdesHost, pdesManager,
-		api.NetworkHandler(netManager, netsim, executor, nodeID, logger,
-			api.NewHandler(manager, nodeID, peerList, client, executor, logger))))
+	routes.Handle("/", pdes.NewHandlerWithOptions(attackHost, attackManager,
+		pdes.NewHandler(pdesHost, pdesManager,
+			api.NetworkHandler(netManager, netsim, executor, nodeID, logger,
+				api.NewHandler(manager, nodeID, peerList, client, executor, logger))),
+		attackOpts))
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           routes,

@@ -4,6 +4,7 @@ import { ApiError, createApiClient } from "../api/client";
 import type { MetricComparison, MockScenario, NetworkReport, NodeReport, RunRecord, RunReport } from "../api/types";
 import { NetworkReportView } from "./NetworkReport";
 import { PDESReportView } from "./PDESReport";
+import { AttackReportView } from "./AttackReport";
 
 function isNetworkReport(report: RunReport): report is NetworkReport {
   return "kind" in report && report.kind === "network";
@@ -137,6 +138,9 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
   }
   if ("kind" in report && report.kind === "pdes") {
     return <PDESReportView report={report} runId={runId} />;
+  }
+  if ("kind" in report && report.kind === "attack") {
+    return <AttackReportView report={report} runId={runId} />;
   }
   const n = report.mean_wait_time?.n ?? report.tasks.complete;
   const peerCounts = Object.entries(report.tasks_per_peer).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }));

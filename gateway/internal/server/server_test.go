@@ -159,6 +159,16 @@ func TestPDESPlanAndScenarioSizeLimit(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"parts":2`) {
 		t.Fatalf("plan response %d %s", rec.Code, rec.Body)
 	}
+	rec = e.do("POST", "/api/attack/plan",
+		`{"coordinator":"node-1","scenario":{"kind":"ddos"},"parts":3}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"parts":3`) {
+		t.Fatalf("attack plan response %d %s", rec.Code, rec.Body)
+	}
+	rec = e.do("POST", "/api/attack/plan",
+		`{"coordinator":"node-1","scenario":{"kind":"ddos"},"parts":0}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "parts") {
+		t.Fatalf("attack plan validation %d %s", rec.Code, rec.Body)
+	}
 	oversizedScenario := `{"coordinator":"node-1","kind":"pdes","scenario":"` +
 		strings.Repeat("x", (4<<20)+1) + `"}`
 	rec = e.do("POST", "/api/runs", oversizedScenario)

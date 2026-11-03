@@ -92,6 +92,7 @@ type Manager struct {
 	remote       *PeerClient
 	stepTimeout  time.Duration
 	phaseTimeout time.Duration
+	options      Options
 
 	mu     sync.Mutex
 	runs   map[string]*Run
@@ -100,6 +101,12 @@ type Manager struct {
 
 func NewManager(ctx context.Context, planner Planner, host *Host, peerList []peers.Peer, selfID string,
 	health HealthChecker, remote *PeerClient, stepTimeout, phaseTimeout time.Duration) *Manager {
+	return NewManagerWithOptions(ctx, planner, host, peerList, selfID, health, remote,
+		stepTimeout, phaseTimeout, NetworkOptions())
+}
+
+func NewManagerWithOptions(ctx context.Context, planner Planner, host *Host, peerList []peers.Peer, selfID string,
+	health HealthChecker, remote *PeerClient, stepTimeout, phaseTimeout time.Duration, options Options) *Manager {
 	if stepTimeout <= 0 {
 		stepTimeout = 30 * time.Second
 	}
@@ -109,12 +116,13 @@ func NewManager(ctx context.Context, planner Planner, host *Host, peerList []pee
 	return &Manager{
 		ctx: ctx, planner: planner, host: host, peers: peerList, selfID: selfID,
 		health: health, remote: remote, stepTimeout: stepTimeout, phaseTimeout: phaseTimeout,
-		runs: make(map[string]*Run),
+		options: options.normalized(), runs: make(map[string]*Run),
 	}
 }
 
 type Run struct {
 	ID          string
+	Kind        string
 	Coordinator string
 	Scenario    json.RawMessage
 	Seed        int64
@@ -146,7 +154,7 @@ func (r *Run) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return Status{
-		Kind: "pdes", BatchID: r.ID, Coordinator: r.Coordinator, State: r.state, Phase: r.phase,
+		Kind: r.Kind, BatchID: r.ID, Coordinator: r.Coordinator, State: r.state, Phase: r.phase,
 		SimulatedTime: r.simulatedTime, WindowsDone: r.windowsDone, WindowsTotal: r.Plan.Windows,
 		Partitions: cloneTimings(r.partitions), FailedNode: r.failedNode, Error: r.err,
 	}
@@ -156,7 +164,7 @@ func (r *Run) Report() Report {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return Report{
-		Kind: "pdes", BatchID: r.ID, Coordinator: r.Coordinator, State: r.state, Phase: r.phase,
+		Kind: r.Kind, BatchID: r.ID, Coordinator: r.Coordinator, State: r.state, Phase: r.phase,
 		Scenario: r.Scenario, Seed: r.Seed, Plan: r.Plan, Metrics: cloneRaw(r.metrics),
 		BaselineMetrics: cloneRaw(r.baselineMetrics), ResultsIdentical: r.resultsIdentical,
 		FirstDifference: r.firstDifference, Speedup: r.speedup,
@@ -243,7 +251,8 @@ func (m *Manager) Start(ctx context.Context, req RunRequest) (*Run, error) {
 	}
 	now := time.Now()
 	run := &Run{
-		ID: makeRunID(m.selfID, now), Coordinator: m.selfID, Scenario: cloneRaw(req.Scenario),
+		ID: makeRunID(m.options.RunPrefix, m.selfID, now), Kind: m.options.Kind,
+		Coordinator: m.selfID, Scenario: cloneRaw(req.Scenario),
 		Seed: seed, Plan: plan, Baseline: baseline, StartedAt: now,
 		state: "running", phase: "planning", partitions: make(map[string]PartitionTiming),
 		done: make(chan struct{}),
@@ -311,8 +320,8 @@ func (m *Manager) healthyPeers(ctx context.Context) ([]peers.Peer, error) {
 	return healthy, nil
 }
 
-func makeRunID(nodeID string, now time.Time) string {
-	return fmt.Sprintf("pdes-%s-%s", nodeID, now.UTC().Format("20060102T150405.000000000"))
+func makeRunID(prefix, nodeID string, now time.Time) string {
+	return fmt.Sprintf("%s-%s-%s", prefix, nodeID, now.UTC().Format("20060102T150405.000000000"))
 }
 
 func (m *Manager) execute(run *Run, participants []peers.Peer) {

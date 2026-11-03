@@ -37,8 +37,10 @@ type Params struct {
 	TolerancePct   float64 `json:"tolerance_pct"`
 	BaseSeed       int64   `json:"base_seed"`
 	SerialBaseline bool    `json:"serial_baseline"`
-	// Kind is "network" for network-scenario runs (empty for M/M/1); their
-	// topology and traffic are in Scenario and the M/M/1 fields are unused.
+	// Kind is "network" for network-scenario runs, "pdes" for partitioned
+	// network runs and "attack" for partitioned threat campaigns (empty for
+	// M/M/1); their topology/campaign is in Scenario and the M/M/1 fields are
+	// unused for those kinds.
 	Kind     string          `json:"kind,omitempty"`
 	Scenario json.RawMessage `json:"scenario,omitempty"`
 	Parts    int             `json:"parts,omitempty"`

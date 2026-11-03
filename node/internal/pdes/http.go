@@ -23,23 +23,30 @@ type Handler struct {
 	host        *Host
 	coordinator Coordinator
 	next        http.Handler
+	options     Options
 }
 
 func NewHandler(host *Host, coordinator Coordinator, next http.Handler) http.Handler {
+	return NewHandlerWithOptions(host, coordinator, next, NetworkOptions())
+}
+
+func NewHandlerWithOptions(host *Host, coordinator Coordinator, next http.Handler, options Options) http.Handler {
 	mux := http.NewServeMux()
 	if next == nil {
 		next = http.NotFoundHandler()
 	}
-	h := &Handler{host: host, coordinator: coordinator, next: next}
-	mux.HandleFunc("POST /pdes/{run}/open", h.open)
-	mux.HandleFunc("POST /pdes/{run}/step", h.step)
-	mux.HandleFunc("POST /pdes/{run}/finish", h.finish)
-	mux.HandleFunc("DELETE /pdes/{run}", h.delete)
+	options = options.normalized()
+	h := &Handler{host: host, coordinator: coordinator, next: next, options: options}
+	prefix := options.EndpointPrefix
+	mux.HandleFunc("POST "+prefix+"/{run}/open", h.open)
+	mux.HandleFunc("POST "+prefix+"/{run}/step", h.step)
+	mux.HandleFunc("POST "+prefix+"/{run}/finish", h.finish)
+	mux.HandleFunc("DELETE "+prefix+"/{run}", h.delete)
 	if coordinator != nil {
-		mux.HandleFunc("POST /pdes/plan", h.plan)
-		mux.HandleFunc("POST /pdesrun", h.start)
-		mux.HandleFunc("GET /pdes/status", h.status)
-		mux.HandleFunc("GET /pdes/report", h.report)
+		mux.HandleFunc("POST "+prefix+"/plan", h.plan)
+		mux.HandleFunc("POST "+options.StartPath, h.start)
+		mux.HandleFunc("GET "+prefix+"/status", h.status)
+		mux.HandleFunc("GET "+prefix+"/report", h.report)
 		mux.HandleFunc("GET /status", h.statusOrNext)
 		mux.HandleFunc("GET /report", h.reportOrNext)
 	}
@@ -197,35 +204,51 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 type PeerClient struct {
 	HTTP    *http.Client
 	Timeout time.Duration
+	Prefix  string
 }
 
 func NewPeerClient(timeout time.Duration) *PeerClient {
+	return NewPeerClientWithPrefix(timeout, NetworkOptions().EndpointPrefix)
+}
+
+func NewPeerClientWithPrefix(timeout time.Duration, prefix string) *PeerClient {
+	if prefix == "" {
+		prefix = NetworkOptions().EndpointPrefix
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
 	return &PeerClient{
 		HTTP: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}},
 		Timeout: timeout,
+		Prefix:  prefix,
 	}
 }
 
+func (c *PeerClient) endpoint(peerURL, suffix string) string {
+	return peerURL + c.Prefix + suffix
+}
+
 func (c *PeerClient) Open(ctx context.Context, peerURL, run string, req OpenRequest) error {
-	return c.call(ctx, http.MethodPost, peerURL+"/pdes/"+url.PathEscape(run)+"/open", req, nil)
+	return c.call(ctx, http.MethodPost, c.endpoint(peerURL, "/"+url.PathEscape(run)+"/open"), req, nil)
 }
 
 func (c *PeerClient) Step(ctx context.Context, peerURL, run string, req StepRequest) (StepResponse, error) {
 	var response StepResponse
-	err := c.call(ctx, http.MethodPost, peerURL+"/pdes/"+url.PathEscape(run)+"/step", req, &response)
+	err := c.call(ctx, http.MethodPost, c.endpoint(peerURL, "/"+url.PathEscape(run)+"/step"), req, &response)
 	return response, err
 }
 
 func (c *PeerClient) Finish(ctx context.Context, peerURL, run string) (FinishResponse, error) {
 	var response FinishResponse
-	err := c.call(ctx, http.MethodPost, peerURL+"/pdes/"+url.PathEscape(run)+"/finish", nil, &response)
+	err := c.call(ctx, http.MethodPost, c.endpoint(peerURL, "/"+url.PathEscape(run)+"/finish"), nil, &response)
 	return response, err
 }
 
 func (c *PeerClient) Delete(ctx context.Context, peerURL, run string) error {
-	return c.call(ctx, http.MethodDelete, peerURL+"/pdes/"+url.PathEscape(run), nil, nil)
+	return c.call(ctx, http.MethodDelete, c.endpoint(peerURL, "/"+url.PathEscape(run)), nil, nil)
 }
 
 func (c *PeerClient) call(ctx context.Context, method, endpoint string, request, response any) error {

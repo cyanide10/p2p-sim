@@ -12,6 +12,7 @@ import type {
   RunRecord,
 } from "./types";
 import type { NetStreamEvent, Scenario } from "../lib/network";
+import type { AttackScenarioWire } from "../lib/attack";
 import { createSseParser, type TrafficEvent, type TrafficParams } from "../lib/traffic";
 import { MockApiClient } from "./mock/MockApiClient";
 
@@ -33,6 +34,10 @@ export interface ApiClient {
   createNetworkRun(coordinator: string, scenario: Scenario, replications: number, baseSeed: number): Promise<RunCreated>;
   planPDES(coordinator: string, scenario: Scenario, parts: number): Promise<PartitionPlan>;
   createPDESRun(coordinator: string, scenario: Scenario, parts: number, baseSeed: number, baseline: boolean): Promise<RunCreated>;
+  /** Plans the topology-token placement for a partitioned attack campaign. */
+  planAttack(coordinator: string, scenario: AttackScenarioWire, parts: number): Promise<PartitionPlan>;
+  /** Starts a partitioned attack campaign (use parts=1 for one worker). */
+  createAttackRun(coordinator: string, scenario: AttackScenarioWire, parts: number, baseSeed: number, baseline: boolean): Promise<RunCreated>;
   /** Streams one live run of a network scenario on node. Returns a function that stops it. */
   openNetworkTraffic(node: string, scenario: Scenario, speed: number, seed: number, start: number, onEvent: (event: NetStreamEvent) => void): () => void;
 }
@@ -132,6 +137,20 @@ export class HttpApiClient implements ApiClient {
     return this.request<RunCreated>("/api/runs", {
       method: "POST",
       body: JSON.stringify({ coordinator, kind: "pdes", scenario, parts, base_seed: baseSeed, baseline }),
+    });
+  }
+
+  planAttack(coordinator: string, scenario: AttackScenarioWire, parts: number) {
+    return this.request<PartitionPlan>("/api/attack/plan", {
+      method: "POST",
+      body: JSON.stringify({ coordinator, scenario, parts }),
+    });
+  }
+
+  createAttackRun(coordinator: string, scenario: AttackScenarioWire, parts: number, baseSeed: number, baseline: boolean) {
+    return this.request<RunCreated>("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({ coordinator, kind: "attack", scenario, parts, base_seed: baseSeed, baseline }),
     });
   }
 

@@ -1,12 +1,24 @@
+import type { AttackMetrics, AttackScenarioWire } from "../lib/attack";
+import type { Scenario } from "../lib/network";
+
+/** Recorded scenarios are a union; these guards pick the right shape. */
+export function isNetworkScenario(value: RunParameters["scenario"]): value is Scenario {
+  return value !== undefined && "flows" in value;
+}
+
+export function isAttackScenario(value: RunParameters["scenario"]): value is AttackScenarioWire {
+  return value !== undefined && "kind" in value;
+}
+
 export interface Peer {
   id: string;
   url: string;
 }
 
 export interface RunParameters {
-  /** "network" for independent network copies; "pdes" for partitioned execution. */
-  kind?: "network" | "pdes";
-  scenario?: import("../lib/network").Scenario;
+  /** "network" for independent network copies; "pdes" for partitioned execution; "attack" for a partitioned threat campaign. */
+  kind?: "network" | "pdes" | "attack";
+  scenario?: import("../lib/network").Scenario | AttackScenarioWire;
   parts?: number;
   baseline?: boolean;
   replications: number;
@@ -109,7 +121,23 @@ export interface PDESStatus {
   stale?: boolean;
 }
 
-export type RunStatus = NodeStatus | PDESStatus;
+export type RunStatus = NodeStatus | PDESStatus | AttackStatus;
+
+/** Partitioned threat-campaign status (node/internal/pdes with kind "attack"). */
+export interface AttackStatus {
+  kind: "attack";
+  batch_id: string;
+  coordinator: string;
+  state: "running" | "complete" | "failed";
+  phase: string;
+  simulated_time: number;
+  windows_done: number;
+  windows_total: number;
+  partitions: Record<string, PartitionTiming>;
+  failed_node?: string;
+  error?: string;
+  stale?: boolean;
+}
 
 export interface MetricComparison {
   n: number;
@@ -258,7 +286,30 @@ export interface PDESReport {
   stale?: boolean;
 }
 
-export type RunReport = NodeReport | NetworkReport | PDESReport;
+export type RunReport = NodeReport | NetworkReport | PDESReport | AttackReport;
+
+/** The node echoes the exact campaign scenario the browser submitted. */
+export interface AttackReport {
+  kind: "attack";
+  batch_id: string;
+  coordinator: string;
+  state: "running" | "complete" | "failed";
+  phase: string;
+  scenario: AttackScenarioWire;
+  base_seed: number;
+  plan: PartitionPlan;
+  metrics?: AttackMetrics;
+  baseline_metrics?: AttackMetrics;
+  results_identical?: boolean;
+  first_difference?: string;
+  speedup?: number;
+  partitioned_wall_seconds: number;
+  baseline_wall_seconds?: number;
+  partitions: Record<string, PartitionTiming>;
+  failed_node?: string;
+  error?: string;
+  stale?: boolean;
+}
 
 export interface RunRecord {
   run_id: string;

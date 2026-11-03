@@ -5,7 +5,7 @@ Status: implemented in `gateway/` (2026-10-04); behavior beyond this draft is re
 ## Common Rules
 
 - All API paths are under `/api`; `/healthz` is the liveness endpoint. Responses use JSON and errors use `{"error":"message"}` unless otherwise specified.
-- Reject unknown JSON fields. Request bodies are capped at 1 MiB, except `POST /api/runs` and `POST /api/pdes/plan`, which allow up to 4 MiB of scenario JSON plus request metadata.
+- Reject unknown JSON fields. Request bodies are capped at 1 MiB, except `POST /api/runs`, `POST /api/pdes/plan` and `POST /api/attack/plan`, which allow up to 4 MiB of scenario JSON plus request metadata.
 - The gateway binds to `127.0.0.1` by default. No CORS is needed for the same-origin SPA.
 - Optional bearer-token auth applies to `/api/*`, not `/healthz` or static assets. Do not embed the token in frontend JavaScript. A deployment that needs browser auth must supply it through a deliberate runtime mechanism.
 - A gateway run ID is the unpadded base64url encoding of the UTF-8 JSON array `[coordinator, batch_id]`. This is reversible, URL-path-safe, and unambiguous. The response still includes `coordinator` and the node's original `batch_id` as separate fields.
@@ -83,9 +83,15 @@ Network runs: send `kind: "network"` with `scenario` (and optional `replications
 
 PDES runs: send `kind: "pdes"` with `scenario` (required, at most 4 MiB), and optional `parts` (1..2000), `base_seed` (nonnegative safe integer), and `baseline` (defaults to `true`). The gateway forwards these to `POST /pdesrun`; the returned `parts` is the number actually selected by the coordinator. The stored parameters retain the scenario, selected part count, seed, and baseline choice. Node `state: "failed"` is terminal and is stored as gateway state `failed`; its status and report remain available in history.
 
+Attack campaigns: send `kind: "attack"` with the campaign `scenario` (same size, `parts`, `base_seed` and `baseline` rules). The gateway forwards to `POST /attackrun`; `parts: 1` is a single worker. Status and report carry `"kind":"attack"`, and the report echoes the submitted campaign scenario so the GUI can rebuild its presentation model.
+
 ### `POST /api/pdes/plan`
 
 Body `{coordinator, scenario, parts}` where scenario is at most 4 MiB and parts is 1..2000. Passes the request to the named node's `POST /pdes/plan` and returns its deterministic partition plan. Unknown coordinator: `400`; node validation and availability errors use the normal downstream error mapping.
+
+### `POST /api/attack/plan`
+
+Same body as `/api/pdes/plan`, but passes through to the named node's `POST /attack/plan` and returns the topology-token partition plan for a threat campaign.
 
 ### `POST /api/netstream`
 
