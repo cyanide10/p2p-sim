@@ -1,7 +1,7 @@
 import { Dices, LoaderCircle, Play, Square, TriangleAlert } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient } from "../api/client";
-import { PanelTitle, Notice, PageHeading } from "../components/PagePrimitives";
+import { PanelTitle, Notice, PageHeading, StatStrip } from "../components/PagePrimitives";
 import { niceScale } from "../lib/chart";
 import type { MockScenario } from "../api/types";
 import {
@@ -367,14 +367,14 @@ export function TrafficPage({ scenario, mockEnabled }: { scenario: MockScenario;
         </div>
       </div>
 
-      <dl className="traffic-tiles">
-        <div><dt>Arrived</dt><dd>{stats?.arrived ?? 0}</dd></div>
-        <div><dt>Delivered</dt><dd>{stats?.served ?? 0}</dd></div>
-        <div><dt>In system now</dt><dd>{state.queue.length + (state.serving === null ? 0 : 1)}</dd></div>
-        <div><dt>Mean delay</dt><dd>{stats?.mean_delay?.toFixed(2) ?? "--"}<small>{theory ? ` theory ${theory.W.toFixed(2)}` : ""}</small></dd></div>
-        <div><dt>Utilization</dt><dd>{stats ? `${(stats.utilization * 100).toFixed(0)}%` : "--"}<small>{theory ? ` theory ${(theory.rho * 100).toFixed(0)}%` : ""}</small></dd></div>
-        <div><dt>Throughput</dt><dd>{stats?.throughput.toFixed(2) ?? "--"}<small>{meta ? ` offered ${meta.lambda}` : ""}</small></dd></div>
-      </dl>
+      <StatStrip variant="tiles" items={[
+        { label: "Arrived", value: stats?.arrived ?? 0 },
+        { label: "Delivered", value: stats?.served ?? 0 },
+        { label: "In system now", value: state.queue.length + (state.serving === null ? 0 : 1) },
+        { label: "Mean delay", value: stats?.mean_delay?.toFixed(2) ?? "--", small: theory ? ` theory ${theory.W.toFixed(2)}` : "" },
+        { label: "Utilization", value: stats ? `${(stats.utilization * 100).toFixed(0)}%` : "--", small: theory ? ` theory ${(theory.rho * 100).toFixed(0)}%` : "" },
+        { label: "Throughput", value: stats?.throughput.toFixed(2) ?? "--", small: meta ? ` offered ${meta.lambda}` : "" },
+      ]} />
 
       <div className="traffic-charts">
         <div className="panel">

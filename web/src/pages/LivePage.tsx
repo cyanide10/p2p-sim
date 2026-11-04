@@ -5,7 +5,7 @@ import type { AttackReport, AttackStatus, GatewayConfig, MockScenario, PDESRepor
 import { isAttackScenario, isNetworkScenario } from "../api/types";
 import { NetworkPlayer } from "../components/NetworkPlayer";
 import { ProgressBar, StateBadge, TaskGrid } from "../components/RunBits";
-import { EmptyState, LoadingState, Notice, PageHeading, SectionTitle } from "../components/PagePrimitives";
+import { EmptyState, LoadingState, Notice, PageHeading, SectionTitle, StatStrip } from "../components/PagePrimitives";
 import { formatDuration } from "../lib/format";
 import { partitionBreakdown } from "../lib/pdes";
 import { TopologyCanvas } from "../components/TopologyCanvas";
@@ -144,15 +144,15 @@ export function LivePage({ runId, scenario, mockEnabled }: { runId: string; scen
         actions={<StateBadge state={state} />}
         actionsLive="polite"
       />
-      <dl className="meta-strip">
-        <div><dt>Coordinator</dt><dd>{record.coordinator}</dd></div>
-        <div><dt>Base seed</dt><dd>{record.params.base_seed}</dd></div>
-        <div><dt>Elapsed</dt><dd>{formatDuration(legacyStatus?.elapsed_seconds)}</dd></div>
-        {record.params.kind === "network"
-          ? <div><dt>Network</dt><dd>{isNetworkScenario(record.params.scenario) ? `${record.params.scenario.nodes.length} nodes · ${record.params.scenario.flows.length} flows` : "scenario"}</dd></div>
-          : <div><dt>λ / μ</dt><dd>{record.params.lambda} / {record.params.mu}</dd></div>}
-        <div className="meta-wide"><dt>Batch ID</dt><dd>{record.batch_id}</dd></div>
-      </dl>
+      <StatStrip variant="meta" items={[
+        { label: "Coordinator", value: record.coordinator },
+        { label: "Base seed", value: record.params.base_seed },
+        { label: "Elapsed", value: formatDuration(legacyStatus?.elapsed_seconds) },
+        record.params.kind === "network"
+          ? { label: "Network", value: isNetworkScenario(record.params.scenario) ? `${record.params.scenario.nodes.length} nodes · ${record.params.scenario.flows.length} flows` : "scenario" }
+          : { label: "λ / μ", value: <>{record.params.lambda} / {record.params.mu}</> },
+        { label: "Batch ID", value: record.batch_id, wide: true },
+      ]} />
 
       {state === "coordinator_lost" && (
         <div className="lost-banner" role="alert">
@@ -265,13 +265,13 @@ function PDESLiveView({ api, runId, record, status, state }: {
         lede={<>{pdesStatus?.phase ?? "Waiting for status"} · seed {record.params.base_seed}</>}
         actions={<StateBadge state={state} />}
       />
-      <dl className="meta-strip">
-        <div><dt>Coordinator</dt><dd>{record.coordinator}</dd></div>
-        <div><dt>Partitions</dt><dd>{record.params.parts ?? report?.plan.parts ?? "--"}</dd></div>
-        <div><dt>Simulated time</dt><dd>{pdesStatus ? `${pdesStatus.simulated_time.toFixed(2)} / ${scenario?.duration ?? 0} s` : "--"}</dd></div>
-        <div><dt>Windows</dt><dd>{pdesStatus ? `${pdesStatus.windows_done.toLocaleString()} / ${pdesStatus.windows_total.toLocaleString()}` : "--"}</dd></div>
-        <div className="meta-wide"><dt>Batch ID</dt><dd>{record.batch_id}</dd></div>
-      </dl>
+      <StatStrip variant="meta" items={[
+        { label: "Coordinator", value: record.coordinator },
+        { label: "Partitions", value: record.params.parts ?? report?.plan.parts ?? "--" },
+        { label: "Simulated time", value: pdesStatus ? `${pdesStatus.simulated_time.toFixed(2)} / ${scenario?.duration ?? 0} s` : "--" },
+        { label: "Windows", value: pdesStatus ? `${pdesStatus.windows_done.toLocaleString()} / ${pdesStatus.windows_total.toLocaleString()}` : "--" },
+        { label: "Batch ID", value: record.batch_id, wide: true },
+      ]} />
       <div className="panel">
         <div className="progress-head"><span>Simulation windows</span><strong>{progress.toFixed(1)}%</strong></div>
         <div className="progress-track" role="progressbar" aria-label="Simulation windows" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
@@ -373,13 +373,13 @@ function AttackLiveView({ api, runId, record, status, state }: {
         lede={<>{attackStatus?.phase ?? "Waiting for status"} · seed {record.params.base_seed}</>}
         actions={<StateBadge state={state} />}
       />
-      <dl className="meta-strip">
-        <div><dt>Coordinator</dt><dd>{record.coordinator}</dd></div>
-        <div><dt>Partitions</dt><dd>{record.params.parts ?? report?.plan.parts ?? "--"}</dd></div>
-        <div><dt>Simulated time</dt><dd>{attackStatus ? `${attackStatus.simulated_time.toFixed(2)} / ${scenario?.duration ?? 0} s` : "--"}</dd></div>
-        <div><dt>Windows</dt><dd>{attackStatus ? `${attackStatus.windows_done.toLocaleString()} / ${attackStatus.windows_total.toLocaleString()}` : "--"}</dd></div>
-        <div className="meta-wide"><dt>Batch ID</dt><dd>{record.batch_id}</dd></div>
-      </dl>
+      <StatStrip variant="meta" items={[
+        { label: "Coordinator", value: record.coordinator },
+        { label: "Partitions", value: record.params.parts ?? report?.plan.parts ?? "--" },
+        { label: "Simulated time", value: attackStatus ? `${attackStatus.simulated_time.toFixed(2)} / ${scenario?.duration ?? 0} s` : "--" },
+        { label: "Windows", value: attackStatus ? `${attackStatus.windows_done.toLocaleString()} / ${attackStatus.windows_total.toLocaleString()}` : "--" },
+        { label: "Batch ID", value: record.batch_id, wide: true },
+      ]} />
       <div className="panel">
         <div className="progress-head"><span>Campaign windows</span><strong>{progress.toFixed(1)}%</strong></div>
         <div className="progress-track" role="progressbar" aria-label="Campaign windows" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>

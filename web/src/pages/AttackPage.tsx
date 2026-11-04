@@ -4,7 +4,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { ApiError, createApiClient } from "../api/client";
-import { PageHeading } from "../components/PagePrimitives";
+import { PageHeading, StatStrip } from "../components/PagePrimitives";
 import type { AttackReport, AttackStatus, MockScenario, PartitionPlan, RunCreated } from "../api/types";
 import { AttackMap } from "../components/AttackMap";
 import {
@@ -687,14 +687,14 @@ export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario 
               </div>
             </section>
 
-            <div className="attack-metrics">
-              <div><span>{scenario.attackLabel}</span><strong>{compact(sample.attackLoad)}<small>{scenario.unit}</small></strong><em>{sample.loadRatio.toFixed(2)}× capacity</em></div>
-              <div><span>{scenario.impactLabel}</span><strong>{impactValue}<small>{scenario.impactUnit}</small></strong><em>current impact</em></div>
-              <div><span>Availability</span><strong>{sample.availability.toFixed(1)}<small>%</small></strong><em>{sample.targetState === "secure" ? "within SLO" : "below SLO"}</em></div>
-              <div><span>Latency</span><strong>{latency.value}<small>{latency.unit}</small></strong><em>p95 service response</em></div>
-              <div><span>{isFlood ? "Botnet engaged" : "Compromised"}</span><strong>{compact(exposureValue)}<small>{isFlood ? "bots" : "hosts"}</small></strong><em>{isFlood ? `${percent(exposurePct, 0)} of botnet` : `${percent(exposurePct, 1)} of estate`}</em></div>
-              <div><span>Attack blocked</span><strong>{sample.blocked.toFixed(0)}<small>%</small></strong><em>{defense === 0 ? "no defence enabled" : "active controls"}</em></div>
-            </div>
+            <StatStrip variant="soc" items={[
+              { label: scenario.attackLabel, value: compact(sample.attackLoad), small: scenario.unit, note: <em>{sample.loadRatio.toFixed(2)}× capacity</em> },
+              { label: scenario.impactLabel, value: impactValue, small: scenario.impactUnit, note: <em>current impact</em> },
+              { label: "Availability", value: sample.availability.toFixed(1), small: "%", note: <em>{sample.targetState === "secure" ? "within SLO" : "below SLO"}</em> },
+              { label: "Latency", value: latency.value, small: latency.unit, note: <em>p95 service response</em> },
+              { label: isFlood ? "Botnet engaged" : "Compromised", value: compact(exposureValue), small: isFlood ? "bots" : "hosts", note: <em>{isFlood ? `${percent(exposurePct, 0)} of botnet` : `${percent(exposurePct, 1)} of estate`}</em> },
+              { label: "Attack blocked", value: sample.blocked.toFixed(0), small: "%", note: <em>{defense === 0 ? "no defence enabled" : "active controls"}</em> },
+            ]} />
 
             <section className="attack-log">
               <div className="attack-rail-title"><span>CAMPAIGN LOG</span><span>{run.events.filter((event) => event.t <= clock + 0.001).length} events</span></div>

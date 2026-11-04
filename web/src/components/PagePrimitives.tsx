@@ -116,3 +116,64 @@ export function LoadingState({ children }: { children: string }) {
     </div>
   );
 }
+
+export type StatItem = {
+  /** Small muted label above the value. */
+  label: ReactNode;
+  /** Primary stat value. */
+  value: ReactNode;
+  /** Muted annotation rendered after the value inside the same dd. */
+  small?: ReactNode;
+  /** Extra row under the value (styled by the variant, e.g. <em>). */
+  note?: ReactNode;
+  /** Span the full strip width (meta params rows). */
+  wide?: boolean;
+  /** Tone classes for value coloring (count-warn / count-bad style hooks live with the variant). */
+  tone?: "warn" | "bad";
+  /** Extra class on the item wrapper. */
+  className?: string;
+  /** Extra class on the dd element (e.g. "time-value"). */
+  valueClassName?: string;
+};
+
+/**
+ * Horizontal stat strip. Replaces the five hand-rolled variants
+ * (summary-strip, meta-strip, traffic-tiles, pdes-summary-grid, attack-metrics)
+ * with one DOM shape; `variant` keeps each page's original look via CSS modifiers.
+ */
+export function StatStrip({
+  items,
+  variant,
+  className,
+  extra,
+  live,
+}: {
+  items: StatItem[];
+  variant: "summary" | "meta" | "tiles" | "pdes" | "soc";
+  className?: string;
+  /** Trailing node inside the strip (e.g. the cluster refresh-state chip). */
+  extra?: ReactNode;
+  live?: boolean;
+}) {
+  return (
+    <dl
+      className={`stat-strip stat-strip--${variant}${className ? ` ${className}` : ""}`}
+      {...(live ? { "aria-live": "polite" as const } : {})}
+    >
+      {items.map((item, index) => (
+        <div
+          className={`stat-item${item.wide ? " stat-wide" : ""}${item.tone ? ` tone-${item.tone}` : ""}${item.className ? ` ${item.className}` : ""}`}
+          key={index}
+        >
+          <dt>{item.label}</dt>
+          <dd className={item.valueClassName}>
+            {item.value}
+            {item.small !== undefined && <small>{item.small}</small>}
+          </dd>
+          {item.note !== undefined && item.note}
+        </div>
+      ))}
+      {extra}
+    </dl>
+  );
+}

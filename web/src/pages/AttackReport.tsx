@@ -2,7 +2,7 @@ import { Check, CircleX, Copy, Crosshair, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { AttackReport } from "../api/types";
 import { AttackMap } from "../components/AttackMap";
-import { EmptyState, Notice, PageHeading, SectionTitle } from "../components/PagePrimitives";
+import { EmptyState, Notice, PageHeading, SectionTitle, StatStrip } from "../components/PagePrimitives";
 import {
   ATTACK_SCENARIOS, attackRunFromMetrics, compact, percent,
   type AttackConfig, type AttackSample,
@@ -100,24 +100,24 @@ export function AttackReportView({ report, runId }: { report: AttackReport; runI
         </Notice>
       )}
 
-      <div className="pdes-summary-grid">
-        <article><span>Peak threat</span><strong>{summary ? `${summary.peakThreat.toFixed(0)} / 100` : "--"}</strong></article>
-        <article><span>Peak load ratio</span><strong>{summary ? `${summary.peakLoadRatio.toFixed(2)}×` : "--"}</strong></article>
-        <article><span>{impact.label}</span><strong>{impact.value}</strong></article>
-        <article><span>Time above capacity</span><strong>{summary ? formatDuration(summary.timeAboveCapacity) : "--"}</strong></article>
-        <article><span>Recovery</span><strong>{summary ? (summary.recoverySeconds === null ? "Not reached" : formatDuration(summary.recoverySeconds)) : "--"}</strong></article>
-        <article><span>Mitigation</span><strong>{summary ? percent(summary.blockedPct) : "--"}</strong></article>
-      </div>
+      <StatStrip variant="pdes" items={[
+        { label: "Peak threat", value: summary ? `${summary.peakThreat.toFixed(0)} / 100` : "--" },
+        { label: "Peak load ratio", value: summary ? `${summary.peakLoadRatio.toFixed(2)}×` : "--" },
+        { label: impact.label, value: impact.value },
+        { label: "Time above capacity", value: summary ? formatDuration(summary.timeAboveCapacity) : "--" },
+        { label: "Recovery", value: summary ? (summary.recoverySeconds === null ? "Not reached" : formatDuration(summary.recoverySeconds)) : "--" },
+        { label: "Mitigation", value: summary ? percent(summary.blockedPct) : "--" },
+      ]} />
 
       <SectionTitle title="Execution" note={report.plan.parts === 1 ? "single worker" : `${report.plan.parts} partitions in lock-step`} />
-      <div className="pdes-summary-grid">
-        <article><span>Partitioned wall time</span><strong>{formatDuration(report.partitioned_wall_seconds)}</strong></article>
-        <article><span>Serial baseline</span><strong>{report.baseline_wall_seconds === undefined ? "Not run" : formatDuration(report.baseline_wall_seconds)}</strong></article>
-        <article><span>Speedup</span><strong>{report.speedup === undefined ? "--" : formatSpeedup(report.speedup)}</strong></article>
-        <article><span>Lookahead / windows</span><strong>{report.plan.lookahead.toPrecision(4)} s · {report.plan.windows.toLocaleString()}</strong></article>
-        <article><span>Campaign scale</span><strong>{compact(report.scenario.scale, 1)}</strong></article>
-        <article><span>Defensive posture</span><strong>{report.scenario.defense}%</strong></article>
-      </div>
+      <StatStrip variant="pdes" items={[
+        { label: "Partitioned wall time", value: formatDuration(report.partitioned_wall_seconds) },
+        { label: "Serial baseline", value: report.baseline_wall_seconds === undefined ? "Not run" : formatDuration(report.baseline_wall_seconds) },
+        { label: "Speedup", value: report.speedup === undefined ? "--" : formatSpeedup(report.speedup) },
+        { label: "Lookahead / windows", value: <>{report.plan.lookahead.toPrecision(4)} s · {report.plan.windows.toLocaleString()}</> },
+        { label: "Campaign scale", value: compact(report.scenario.scale, 1) },
+        { label: "Defensive posture", value: <>{report.scenario.defense}%</> },
+      ]} />
 
       <SectionTitle title="Partition timing breakdown" note={`sum compute / barrier wait: ${breakdown.totalCompute.toFixed(2)} s / ${breakdown.totalWait.toFixed(2)} s`} />
       <div className="partition-timing-list">

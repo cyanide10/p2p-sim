@@ -5,7 +5,7 @@ import type { MetricComparison, MockScenario, NetworkReport, NodeReport, RunReco
 import { NetworkReportView } from "./NetworkReport";
 import { PDESReportView } from "./PDESReport";
 import { AttackReportView } from "./AttackReport";
-import { EmptyState, LoadingState, Notice, PageHeading, PanelTitle, SectionTitle } from "../components/PagePrimitives";
+import { EmptyState, LoadingState, Notice, PageHeading, PanelTitle, SectionTitle, StatStrip } from "../components/PagePrimitives";
 
 function isNetworkReport(report: RunReport): report is NetworkReport {
   return "kind" in report && report.kind === "network";
@@ -228,18 +228,22 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
       )}
 
       <SectionTitle title="Parameters" />
-      <dl className="meta-strip params-strip">
-        <div><dt>λ</dt><dd>{report.params.lambda}</dd></div>
-        <div><dt>μ</dt><dd>{report.params.mu}</dd></div>
-        <div><dt>ρ</dt><dd>{formatNumber(report.theoretical.rho, 3)}</dd></div>
-        <div><dt>Simulation time</dt><dd>{report.params.sim_time}</dd></div>
-        <div><dt>Warmup</dt><dd>{report.params.warmup_time}</dd></div>
-        <div><dt>Replications</dt><dd>{report.replications_requested}</dd></div>
-        <div><dt>Base seed</dt><dd>{report.base_seed}</dd></div>
-        <div><dt>Tolerance</dt><dd>{formatPercent(report.tolerance_pct, 0)}</dd></div>
-        <div className="meta-wide"><dt>Seed scheme</dt><dd>{report.seed_scheme}</dd></div>
-        <div className="meta-wide"><dt>CI method</dt><dd>{report.ci_method}</dd></div>
-      </dl>
+      <StatStrip
+        variant="meta"
+        className="params-strip"
+        items={[
+          { label: "λ", value: report.params.lambda },
+          { label: "μ", value: report.params.mu },
+          { label: "ρ", value: formatNumber(report.theoretical.rho, 3) },
+          { label: "Simulation time", value: report.params.sim_time },
+          { label: "Warmup", value: report.params.warmup_time },
+          { label: "Replications", value: report.replications_requested },
+          { label: "Base seed", value: report.base_seed },
+          { label: "Tolerance", value: formatPercent(report.tolerance_pct, 0) },
+          { label: "Seed scheme", value: report.seed_scheme, wide: true },
+          { label: "CI method", value: report.ci_method, wide: true },
+        ]}
+      />
     </section>
   );
 }

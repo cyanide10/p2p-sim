@@ -2,7 +2,7 @@ import { Activity, CircleHelp, CircleX, Clock3, Network, RadioTower, RefreshCw, 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createApiClient } from "./api/client";
 import { MOCK_SCENARIOS, type ClusterSnapshot, type GatewayConfig, type MockScenario, type RunCreated } from "./api/types";
-import { EmptyState, LoadingState, Notice, PageHeading, SectionTitle } from "./components/PagePrimitives";
+import { EmptyState, LoadingState, Notice, PageHeading, SectionTitle, StatStrip } from "./components/PagePrimitives";
 import { parseHash } from "./lib/format";
 import { startPolling } from "./lib/poll";
 import { AttackPage } from "./pages/AttackPage";
@@ -92,12 +92,16 @@ function ClusterPage({
       {error && <Notice kind="error">{error}</Notice>}
       {disagreement && <Notice kind="warning">Peer views disagree. This may indicate a network partition.</Notice>}
 
-      <div className="summary-strip" aria-live="polite">
-        <div className="summary-stat"><span>Configured nodes</span><strong>{config?.peers.length ?? "--"}</strong></div>
-        <div className="summary-stat"><span>Healthy</span><strong>{nodes.filter((node) => node.healthy).length}<small> / {nodes.length}</small></strong></div>
-        <div className="summary-stat"><span>Last updated</span><strong className="time-value"><Clock3 size={15} />{lastUpdated}</strong></div>
-        <span className={`refresh-state ${loading ? "is-loading" : ""}`}><i />{loading ? "Connecting" : "Auto refresh · 3 sec"}</span>
-      </div>
+      <StatStrip
+        variant="summary"
+        live
+        items={[
+          { label: "Configured nodes", value: config?.peers.length ?? "--" },
+          { label: "Healthy", value: nodes.filter((node) => node.healthy).length, small: ` / ${nodes.length}` },
+          { label: "Last updated", value: <><Clock3 size={15} />{lastUpdated}</>, valueClassName: "time-value" },
+        ]}
+        extra={<span className={`refresh-state ${loading ? "is-loading" : ""}`}><i />{loading ? "Connecting" : "Auto refresh · 3 sec"}</span>}
+      />
 
       {loading && !snapshot ? (
         <LoadingState>Connecting to cluster</LoadingState>

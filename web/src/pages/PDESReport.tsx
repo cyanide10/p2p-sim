@@ -2,7 +2,7 @@ import { Activity, Check, CircleX, Copy, Network, TriangleAlert } from "lucide-r
 import { useState } from "react";
 import type { PDESMetrics, PDESReport } from "../api/types";
 import { TopologyCanvas } from "../components/TopologyCanvas";
-import { EmptyState, Notice, PageHeading, SectionTitle } from "../components/PagePrimitives";
+import { EmptyState, Notice, PageHeading, SectionTitle, StatStrip } from "../components/PagePrimitives";
 import { formatDuration, formatSpeedup } from "../lib/format";
 import { partitionBreakdown } from "../lib/pdes";
 
@@ -62,12 +62,12 @@ export function PDESReportView({ report, runId }: { report: PDESReport; runId: s
       {report.results_identical === true && <div className="serial-match serial-ok"><Check size={18} /><span>Serial and partitioned metrics are identical.</span></div>}
       {report.results_identical === false && <Notice kind="error"><TriangleAlert size={18} /><span><strong>Serial and partitioned results differ.</strong> First differing path: <code>{report.first_difference ?? "unknown"}</code></span></Notice>}
 
-      <div className="pdes-summary-grid">
-        <article><span>Partitioned wall time</span><strong>{formatDuration(report.partitioned_wall_seconds)}</strong></article>
-        <article><span>Serial baseline</span><strong>{report.baseline_wall_seconds === undefined ? "Not run" : formatDuration(report.baseline_wall_seconds)}</strong></article>
-        <article><span>Speedup</span><strong>{report.speedup === undefined ? "--" : formatSpeedup(report.speedup)}</strong></article>
-        <article><span>Lookahead / windows</span><strong>{report.plan.lookahead.toPrecision(4)} s · {report.plan.windows.toLocaleString()}</strong></article>
-      </div>
+      <StatStrip variant="pdes" items={[
+        { label: "Partitioned wall time", value: formatDuration(report.partitioned_wall_seconds) },
+        { label: "Serial baseline", value: report.baseline_wall_seconds === undefined ? "Not run" : formatDuration(report.baseline_wall_seconds) },
+        { label: "Speedup", value: report.speedup === undefined ? "--" : formatSpeedup(report.speedup) },
+        { label: "Lookahead / windows", value: <>{report.plan.lookahead.toPrecision(4)} s · {report.plan.windows.toLocaleString()}</> },
+      ]} />
 
       <SectionTitle title="Partition timing breakdown" note={`sum compute / barrier wait: ${breakdown.totalCompute.toFixed(2)} s / ${breakdown.totalWait.toFixed(2)} s`} />
       <div className="partition-timing-list">

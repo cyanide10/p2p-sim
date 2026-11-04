@@ -4,7 +4,7 @@ import type { ApiClient } from "../api/client";
 import type { Band, Estimate, NetworkReport } from "../api/types";
 import { NetworkPlayer } from "../components/NetworkPlayer";
 import { TopologyCanvas } from "../components/TopologyCanvas";
-import { Notice, PageHeading, PanelTitle, SectionTitle } from "../components/PagePrimitives";
+import { Notice, PageHeading, PanelTitle, SectionTitle, StatStrip } from "../components/PagePrimitives";
 import { niceScale } from "../lib/chart";
 import { formatDuration } from "../lib/format";
 import { flowSlot, type Scenario } from "../lib/network";
@@ -121,14 +121,14 @@ export function NetworkReportView({ report, runId, api }: { report: NetworkRepor
       <NetworkPlayer api={api} scenario={sc} copies={Array.from({ length: Math.min(report.replications_requested, 100) }, (_, i) => ({ label: `Copy ${i + 1} (seed ${report.base_seed + i})`, seed: report.base_seed + i }))} />
 
       <SectionTitle className="net-results-title" title="Combined results" note={`all ${done} copies`} />
-      <dl className="traffic-tiles">
-        <div><dt>Delivered</dt><dd>{totals.throughput?.mean.toFixed(1) ?? "--"}<small> pkt/s ± {totals.throughput?.ci95_half_width.toFixed(1) ?? "--"}</small></dd></div>
-        <div><dt>Mean delay</dt><dd>{totals.mean_delay ? (totals.mean_delay.mean * 1000).toFixed(0) : "--"}<small> ms ± {totals.mean_delay ? (totals.mean_delay.ci95_half_width * 1000).toFixed(0) : "--"}</small></dd></div>
-        <div><dt>Packet loss</dt><dd>{totals.loss_rate ? (totals.loss_rate.mean * 100).toFixed(2) : "--"}<small>% ± {totals.loss_rate ? (totals.loss_rate.ci95_half_width * 100).toFixed(2) : "--"}</small></dd></div>
-        <div><dt>Copies</dt><dd>{done}<small> / {report.replications_requested}</small></dd></div>
-        <div><dt>Wall clock</dt><dd>{formatDuration(report.timing.distributed_wall_clock_seconds)}</dd></div>
-        <div><dt>Parallelism</dt><dd>{report.timing.parallelism ? `${report.timing.parallelism.toFixed(2)}×` : "--"}<small> on {report.timing.distributed_peers} nodes</small></dd></div>
-      </dl>
+      <StatStrip variant="tiles" items={[
+        { label: "Delivered", value: totals.throughput?.mean.toFixed(1) ?? "--", small: ` pkt/s ± ${totals.throughput?.ci95_half_width.toFixed(1) ?? "--"}` },
+        { label: "Mean delay", value: totals.mean_delay ? (totals.mean_delay.mean * 1000).toFixed(0) : "--", small: ` ms ± ${totals.mean_delay ? (totals.mean_delay.ci95_half_width * 1000).toFixed(0) : "--"}` },
+        { label: "Packet loss", value: totals.loss_rate ? (totals.loss_rate.mean * 100).toFixed(2) : "--", small: `% ± ${totals.loss_rate ? (totals.loss_rate.ci95_half_width * 100).toFixed(2) : "--"}` },
+        { label: "Copies", value: done, small: ` / ${report.replications_requested}` },
+        { label: "Wall clock", value: formatDuration(report.timing.distributed_wall_clock_seconds) },
+        { label: "Parallelism", value: report.timing.parallelism ? `${report.timing.parallelism.toFixed(2)}×` : "--", small: ` on ${report.timing.distributed_peers} nodes` },
+      ]} />
 
       <div className="panel">
         <PanelTitle title="Average load" note="darker and thicker = busier · hover a link or router for its value" />
