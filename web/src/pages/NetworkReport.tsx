@@ -4,6 +4,7 @@ import type { ApiClient } from "../api/client";
 import type { Band, Estimate, NetworkReport } from "../api/types";
 import { NetworkPlayer } from "../components/NetworkPlayer";
 import { TopologyCanvas } from "../components/TopologyCanvas";
+import { Notice, PageHeading, PanelTitle, SectionTitle } from "../components/PagePrimitives";
 import { niceScale } from "../lib/chart";
 import { formatDuration } from "../lib/format";
 import { flowSlot, type Scenario } from "../lib/network";
@@ -96,31 +97,30 @@ export function NetworkReportView({ report, runId, api }: { report: NetworkRepor
 
   return (
     <section className="page-content" aria-labelledby="netreport-heading">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">NETWORK REPORT</p>
-          <h1 id="netreport-heading">Network results</h1>
-          <p className="lede">{done} independent copies of the network, combined · {report.batch_id} · coordinated by {report.coordinator}</p>
-        </div>
-        <div className="heading-actions">
+      <PageHeading
+        id="netreport-heading"
+        eyebrow="NETWORK REPORT"
+        title="Network results"
+        lede={`${done} independent copies of the network, combined · ${report.batch_id} · coordinated by ${report.coordinator}`}
+        actions={<>
           <a className="ghost-button" href="#/network"><Network size={15} />Edit network</a>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}><Activity size={15} />Progress</a>
           <button className="ghost-button" type="button" onClick={() => void copy()}>{copied === "copied" ? <Check size={15} /> : <Copy size={15} />}{copied === "copied" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy as JSON"}</button>
-        </div>
-      </div>
+        </>}
+      />
 
-      {report.verdict === "PENDING" && <div className="notice notice-warning" role="status">{report.verdict_detail}</div>}
-      {report.stale && <div className="notice notice-warning" role="status">Stored snapshot: the coordinator is unavailable.</div>}
-      {done > 0 && done < 10 && <div className="notice notice-warning" role="status"><TriangleAlert size={15} /> Only {done} copies: confidence intervals are wide. Run 30 or more for tighter estimates.</div>}
+      {report.verdict === "PENDING" && <Notice kind="warning">{report.verdict_detail}</Notice>}
+      {report.stale && <Notice kind="warning">Stored snapshot: the coordinator is unavailable.</Notice>}
+      {done > 0 && done < 10 && <Notice kind="warning"><TriangleAlert size={15} /> Only {done} copies: confidence intervals are wide. Run 30 or more for tighter estimates.</Notice>}
       <div className={`verdict-card ${report.verdict === "FAIL" ? "verdict-fail" : report.verdict === "COMPLETE" ? "verdict-pass" : "verdict-pending"}`}>
         <div className="verdict-mark">{report.verdict === "FAIL" ? <CircleX size={30} /> : <CircleCheck size={30} />}</div>
         <div><p className="eyebrow">STATUS</p><strong className="verdict-word">{report.verdict === "COMPLETE" ? "Complete" : report.verdict === "FAIL" ? "Failed" : "Running"}</strong><p>{report.verdict_detail}. Values are means across copies ± 95% confidence interval.</p></div>
       </div>
 
-      <div className="section-title"><h2>Watch the traffic</h2><span>replay any computed copy · same seed, same packets</span></div>
+      <SectionTitle title="Watch the traffic" note="replay any computed copy · same seed, same packets" />
       <NetworkPlayer api={api} scenario={sc} copies={Array.from({ length: Math.min(report.replications_requested, 100) }, (_, i) => ({ label: `Copy ${i + 1} (seed ${report.base_seed + i})`, seed: report.base_seed + i }))} />
 
-      <div className="section-title net-results-title"><h2>Combined results</h2><span>all {done} copies</span></div>
+      <SectionTitle className="net-results-title" title="Combined results" note={`all ${done} copies`} />
       <dl className="traffic-tiles">
         <div><dt>Delivered</dt><dd>{totals.throughput?.mean.toFixed(1) ?? "--"}<small> pkt/s ± {totals.throughput?.ci95_half_width.toFixed(1) ?? "--"}</small></dd></div>
         <div><dt>Mean delay</dt><dd>{totals.mean_delay ? (totals.mean_delay.mean * 1000).toFixed(0) : "--"}<small> ms ± {totals.mean_delay ? (totals.mean_delay.ci95_half_width * 1000).toFixed(0) : "--"}</small></dd></div>
@@ -131,26 +131,26 @@ export function NetworkReportView({ report, runId, api }: { report: NetworkRepor
       </dl>
 
       <div className="panel">
-        <div className="panel-title"><h2>Average load</h2><span>darker and thicker = busier · hover a link or router for its value</span></div>
+        <PanelTitle title="Average load" note="darker and thicker = busier · hover a link or router for its value" />
         <div className="net-heat-legend" aria-hidden="true"><span>0%</span><i /><span>100%</span><span className="topo-congested-chip">⚠ ≥ 85%</span></div>
         <div className="net-canvas net-canvas-report"><TopologyCanvas scenario={sc} mode="heat" heat={heat} routerHeat={routerHeat} flowIndex={flowIndex} /></div>
       </div>
 
       <div className="traffic-charts">
         <div className="panel">
-          <div className="panel-title"><h2>Traffic over time</h2><span>packets/s · line = mean, band = 95% CI</span></div>
+          <PanelTitle title="Traffic over time" note="packets/s · line = mean, band = 95% CI" />
           <ul className="chart-legend"><li><i className="legend-swatch" style={{ background: "var(--flow-0)" }} />Delivered</li><li><i className="legend-swatch" style={{ background: "var(--flow-1)" }} />Dropped</li><li><i className="legend-ref legend-event" />Failure / recovery</li></ul>
           <BandChart label="Delivered and dropped packets per second over simulated time" unit="pkt/s" binWidth={report.series.bin_width} duration={sc.duration} events={sc.events}
             series={[{ name: "Delivered", color: "var(--flow-0)", band: report.series.delivered_rate }, { name: "Dropped", color: "var(--flow-1)", band: report.series.dropped_rate }]} />
         </div>
         <div className="panel">
-          <div className="panel-title"><h2>Delay over time</h2><span>ms, packets delivered in each interval</span></div>
+          <PanelTitle title="Delay over time" note="ms, packets delivered in each interval" />
           <BandChart label="Mean packet delay over simulated time" unit="ms" scale={1000} binWidth={report.series.bin_width} duration={sc.duration} events={sc.events}
             series={[{ name: "Mean delay", color: "var(--flow-0)", band: report.series.mean_delay }]} />
         </div>
       </div>
 
-      <div className="section-title"><h2>Flows</h2><span>{sc.flows.length}</span></div>
+      <SectionTitle title="Flows" note={sc.flows.length} />
       <div className="matrix-frame table-scroll">
         <table className="data-table net-report-table">
           <thead><tr><th scope="col">Flow</th><th scope="col">Route</th><th scope="col">Delivered (pkt/s)</th><th scope="col">Mean delay (ms)</th><th scope="col">p95 delay (ms)</th><th scope="col">Loss (%)</th></tr></thead>
@@ -164,7 +164,7 @@ export function NetworkReportView({ report, runId, api }: { report: NetworkRepor
 
       <div className="report-columns">
         <div>
-          <div className="section-title"><h2>Links</h2><span>busiest first</span></div>
+          <SectionTitle title="Links" note="busiest first" />
           <div className="matrix-frame table-scroll">
             <table className="data-table net-report-table">
               <thead><tr><th scope="col">Link</th><th scope="col">Load (%)</th><th scope="col">Drops</th><th scope="col">Avg queue</th></tr></thead>
@@ -173,7 +173,7 @@ export function NetworkReportView({ report, runId, api }: { report: NetworkRepor
           </div>
         </div>
         <div>
-          <div className="section-title"><h2>Routers</h2></div>
+          <SectionTitle title="Routers" />
           <div className="matrix-frame table-scroll">
             <table className="data-table net-report-table">
               <thead><tr><th scope="col">Router</th><th scope="col">Load (%)</th><th scope="col">Drops</th><th scope="col">Avg queue</th></tr></thead>
@@ -181,7 +181,7 @@ export function NetworkReportView({ report, runId, api }: { report: NetworkRepor
             </table>
           </div>
           <div className="panel net-peers">
-            <div className="panel-title"><h2>Work per node</h2><span>copies simulated</span></div>
+            <PanelTitle title="Work per node" note="copies simulated" />
             <ul className="peer-bars">{peers.map(([peer, count]) => <li key={peer}><span className="peer-name">{peer}</span><span className="peer-bar"><i style={{ width: `${(count / maxPeer) * 100}%` }} /></span><span className="peer-count">{count}</span></li>)}</ul>
             <p className="panel-note">{report.tasks.failed_attempts} failed attempt(s) retried elsewhere · {report.tasks.failed} permanently failed · seeds {report.base_seed}…{report.base_seed + report.replications_requested - 1}</p>
           </div>

@@ -5,6 +5,7 @@ import type { MetricComparison, MockScenario, NetworkReport, NodeReport, RunReco
 import { NetworkReportView } from "./NetworkReport";
 import { PDESReportView } from "./PDESReport";
 import { AttackReportView } from "./AttackReport";
+import { EmptyState, LoadingState, Notice, PageHeading, PanelTitle, SectionTitle } from "../components/PagePrimitives";
 
 function isNetworkReport(report: RunReport): report is NetworkReport {
   return "kind" in report && report.kind === "network";
@@ -118,19 +119,20 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
     const lost = record?.state === "coordinator_lost";
     return (
       <section className="page-content">
-        <div className="empty-state">
-          {lost ? <Unplug size={22} /> : <CircleX size={22} />}
-          <strong>{error.status === 404 ? "Run not found" : lost ? "No report: the coordinator was lost" : "Report unavailable"}</strong>
+        <EmptyState
+          icon={lost ? <Unplug size={22} /> : <CircleX size={22} />}
+          title={error.status === 404 ? "Run not found" : lost ? "No report: the coordinator was lost" : "Report unavailable"}
+        >
           <span>{error.message}</span>
           {lost
             ? <a href={`#/launch?resubmit=${encodeURIComponent(runId)}`}><RotateCcw size={14} /> Resubmit with the same base seed</a>
             : <a href={`#/live/${encodeURIComponent(runId)}`}>Open live view</a>}
-        </div>
+        </EmptyState>
       </section>
     );
   }
   if (!report) {
-    return <section className="page-content"><div className="loading-state" role="status"><span className="spinner" />Loading report</div></section>;
+    return <section className="page-content"><LoadingState>Loading report</LoadingState></section>;
   }
 
   if (isNetworkReport(report)) {
@@ -150,24 +152,23 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
 
   return (
     <section className="page-content" aria-labelledby="report-heading">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">BATCH REPORT</p>
-          <h1 id="report-heading">Report</h1>
-          <p className="lede">{report.batch_id} · coordinated by {report.coordinator}</p>
-        </div>
-        <div className="heading-actions">
+      <PageHeading
+        id="report-heading"
+        eyebrow="BATCH REPORT"
+        title="Report"
+        lede={`${report.batch_id} · coordinated by ${report.coordinator}`}
+        actions={<>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}><Activity size={15} />Live view</a>
           <button className="ghost-button" type="button" onClick={() => void copyJson()} aria-live="polite">
             {copied === "copied" ? <Check size={15} /> : <Copy size={15} />}
             {copied === "copied" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy as JSON"}
           </button>
-        </div>
-      </div>
+        </>}
+      />
 
-      {report.stale && <div className="notice notice-warning stale-notice" role="status"><History size={15} />Stored snapshot: the coordinator is unavailable, so this report may be out of date.</div>}
-      {report.verdict === "PENDING" && <div className="notice notice-warning" role="status">The batch is still running. Statistics are provisional.</div>}
-      {n < SMALL_SAMPLE && <div className="notice notice-warning" role="status"><TriangleAlert size={15} /> Only {n} replications completed. The normal-approximation 95% CI is only reliable for n ≥ {SMALL_SAMPLE}.</div>}
+      {report.stale && <Notice kind="warning" className="stale-notice"><History size={15} />Stored snapshot: the coordinator is unavailable, so this report may be out of date.</Notice>}
+      {report.verdict === "PENDING" && <Notice kind="warning">The batch is still running. Statistics are provisional.</Notice>}
+      {n < SMALL_SAMPLE && <Notice kind="warning"><TriangleAlert size={15} /> Only {n} replications completed. The normal-approximation 95% CI is only reliable for n ≥ {SMALL_SAMPLE}.</Notice>}
 
       <div className={`verdict-card ${verdictClass}`}>
         <div className="verdict-mark">{report.verdict === "PASS" ? <CircleCheck size={30} /> : report.verdict === "FAIL" ? <CircleX size={30} /> : <Activity size={30} />}</div>
@@ -178,7 +179,7 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
         </div>
       </div>
 
-      <div className="section-title"><h2>Metrics vs M/M/1 theory</h2><span>Dot: mean · whisker: 95% CI · dashed line: theory · band: tolerance</span></div>
+      <SectionTitle title="Metrics vs M/M/1 theory" note="Dot: mean · whisker: 95% CI · dashed line: theory · band: tolerance" />
       <div className="metric-grid">
         <MetricCard title="Mean time in system" symbol="W" metric={report.mean_wait_time} />
         <MetricCard title="Mean number in system" symbol="L" metric={report.mean_queue_length} />
@@ -187,7 +188,7 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
 
       <div className="report-columns">
         <div className="panel">
-          <div className="panel-title"><h2>Tasks per node</h2><span>Completed results</span></div>
+          <PanelTitle title="Tasks per node" note="Completed results" />
           {peerCounts.length === 0 ? <p className="metric-empty">No completed results yet.</p> : (
             <ul className="peer-bars">
               {peerCounts.map(([peer, count]) => (
@@ -203,7 +204,7 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
         </div>
 
         <div className="panel">
-          <div className="panel-title"><h2>Timing</h2><span>Distributed vs serial</span></div>
+          <PanelTitle title="Timing" note="Distributed vs serial" />
           <div className="speedup"><span>Speedup</span><strong>{formatSpeedup(report.timing.speedup)}</strong></div>
           <dl className="timing-list">
             <div><dt>Distributed wall clock</dt><dd>{formatDuration(report.timing.distributed_wall_clock_seconds)}</dd></div>
@@ -216,7 +217,7 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
 
       {report.failed_tasks.length > 0 && (
         <>
-          <div className="section-title"><h2>Permanently failed tasks</h2><span>{report.failed_tasks.length}</span></div>
+          <SectionTitle title="Permanently failed tasks" note={report.failed_tasks.length} />
           <div className="matrix-frame">
             <table className="data-table">
               <thead><tr><th scope="col">Task</th><th scope="col">Seed</th><th scope="col">Attempts</th><th scope="col">Last error</th></tr></thead>
@@ -226,7 +227,7 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
         </>
       )}
 
-      <div className="section-title"><h2>Parameters</h2></div>
+      <SectionTitle title="Parameters" />
       <dl className="meta-strip params-strip">
         <div><dt>λ</dt><dd>{report.params.lambda}</dd></div>
         <div><dt>μ</dt><dd>{report.params.mu}</dd></div>

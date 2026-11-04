@@ -2,6 +2,7 @@ import { ArrowRight, Dices, LoaderCircle, Play, RotateCcw, Server, TriangleAlert
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, createApiClient } from "../api/client";
 import type { GatewayConfig, MockScenario, Peer, RunCreated, RunParameters, RunRecord } from "../api/types";
+import { LoadingState, Notice, PageHeading } from "../components/PagePrimitives";
 import { startRun } from "../lib/resubmit";
 import { randomSeed, validateRun, type RunField } from "../lib/validation";
 
@@ -144,10 +145,10 @@ export function LaunchPage({
   };
 
   if (loadError) {
-    return <section className="page-content"><div className="notice notice-error" role="alert">{loadError}</div><a href="#/cluster">Return to Cluster</a></section>;
+    return <section className="page-content"><Notice kind="error">{loadError}</Notice><a href="#/cluster">Return to Cluster</a></section>;
   }
   if (!config || !draft || !params || !validation) {
-    return <section className="page-content"><div className="loading-state" role="status"><span className="spinner" />Loading run settings</div></section>;
+    return <section className="page-content"><LoadingState>Loading run settings</LoadingState></section>;
   }
 
   const theoretical = validation.theoretical;
@@ -169,20 +170,19 @@ export function LaunchPage({
   );
   return (
     <section className="page-content launch-content" aria-labelledby="launch-heading">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">NEW SIMULATION</p>
-          <h1 id="launch-heading">Launch run</h1>
-          <p className="lede">Configure an independent replication batch and choose its coordinating node.</p>
-        </div>
-      </div>
+      <PageHeading
+        id="launch-heading"
+        eyebrow="NEW SIMULATION"
+        title="Launch run"
+        lede="Configure an independent replication batch and choose its coordinating node."
+      />
 
       {resubmitOf && (
-        <div className="notice notice-info" role="status">
+        <Notice kind="info">
           <RotateCcw size={15} /> Resubmitting {recorded ? "the recorded " : ""}batch {resubmitOf.batch_id} from {resubmitOf.coordinator} with the same {recorded ? "scenario" : "parameters"} and base seed {resubmitOf.params.base_seed}. The same seed reproduces the same statistics.
-        </div>
+        </Notice>
       )}
-      {submitError && <div className={`notice ${busyConflict ? "notice-warning" : "notice-error"}`} role="alert">{submitError}</div>}
+      {submitError && <Notice kind={busyConflict ? "warning" : "error"}>{submitError}</Notice>}
       {busyConflict && alternatePeer && (
         <div className="retry-strip">
           <span><TriangleAlert size={17} /> {alternatePeer.id} is healthy and available.</span>

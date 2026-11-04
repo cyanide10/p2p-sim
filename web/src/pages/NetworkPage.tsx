@@ -4,6 +4,7 @@ import { ApiError, createApiClient } from "../api/client";
 import type { MockScenario } from "../api/types";
 import type { PartitionPlan } from "../api/types";
 import { NetworkPlayer } from "../components/NetworkPlayer";
+import { Notice, PageHeading } from "../components/PagePrimitives";
 import { TopologyCanvas, type Selection, type Tool } from "../components/TopologyCanvas";
 import {
   checkScenario, cloneScenario, flowSlot, generateGridScenario, nextId, offeredPackets, parseScenario,
@@ -268,15 +269,14 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
 
   return (
     <section className="page-content network-content" aria-labelledby="network-heading">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">NETWORK LAB</p>
-          <h1 id="network-heading">Network</h1>
-          <p className="lede">Draw a network, give it traffic that changes over time and failures, then watch it live or run many copies across your nodes.</p>
-        </div>
-      </div>
+      <PageHeading
+        id="network-heading"
+        eyebrow="NETWORK LAB"
+        title="Network"
+        lede="Draw a network, give it traffic that changes over time and failures, then watch it live or run many copies across your nodes."
+      />
 
-      {notice && <div className={`notice ${notice.kind === "error" ? "notice-error" : "notice-info"}`} role={notice.kind === "error" ? "alert" : "status"}>{notice.kind === "error" && <TriangleAlert size={15} />}{notice.text}</div>}
+      {notice && <Notice kind={notice.kind} >{notice.kind === "error" ? <TriangleAlert size={15} /> : null}{notice.text}</Notice>}
 
       <div className="net-runbar">
         <div className="net-run-group">

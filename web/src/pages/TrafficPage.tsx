@@ -1,6 +1,7 @@
 import { Dices, LoaderCircle, Play, Square, TriangleAlert } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient } from "../api/client";
+import { PanelTitle, Notice, PageHeading } from "../components/PagePrimitives";
 import { niceScale } from "../lib/chart";
 import type { MockScenario } from "../api/types";
 import {
@@ -318,17 +319,16 @@ export function TrafficPage({ scenario, mockEnabled }: { scenario: MockScenario;
 
   return (
     <section className="page-content traffic-content" aria-labelledby="traffic-heading">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">LIVE TRAFFIC</p>
-          <h1 id="traffic-heading">Traffic</h1>
-          <p className="lede">One router queue, simulated in real time on the node you pick. Every packet you see is an event from that node.</p>
-        </div>
-        <div className="heading-actions"><span className={`state-badge traffic-${status}`}>{running && <LoaderCircle size={14} className="button-spin" />}{statusLabels[status]}</span></div>
-      </div>
+      <PageHeading
+        id="traffic-heading"
+        eyebrow="LIVE TRAFFIC"
+        title="Traffic"
+        lede="One router queue, simulated in real time on the node you pick. Every packet you see is an event from that node."
+        actions={<span className={`state-badge traffic-${status}`}>{running && <LoaderCircle size={14} className="button-spin" />}{statusLabels[status]}</span>}
+      />
 
-      {loadError && <div className="notice notice-error" role="alert">{loadError}</div>}
-      {state.error && <div className="notice notice-error" role="alert"><TriangleAlert size={15} />{state.error}</div>}
+      {loadError && <Notice kind="error">{loadError}</Notice>}
+      {state.error && <Notice kind="error"><TriangleAlert size={15} />{state.error}</Notice>}
 
       <form className="traffic-controls" onSubmit={(e) => { e.preventDefault(); if (running) stop(); else start(); }}>
         <label className="number-field"><span className="field-label">Node</span>
@@ -358,7 +358,7 @@ export function TrafficPage({ scenario, mockEnabled }: { scenario: MockScenario;
       </form>
 
       <div className="panel stage-panel">
-        <div className="panel-title"><h2>Router</h2><span>{meta ? `node ${node} · seed ${meta.seed}` : mockEnabled ? "mock stream (computed in the browser)" : "waiting for a stream"}</span></div>
+        <PanelTitle title="Router" note={meta ? `node ${node} · seed ${meta.seed}` : mockEnabled ? "mock stream (computed in the browser)" : "waiting for a stream"} />
         <RouterStage state={state} frame={frame} lambda={params.lambda} mu={params.mu} layout={narrow ? COMPACT : WIDE} />
         <div className="sim-clock">
           <span>Simulated time</span>
@@ -378,11 +378,11 @@ export function TrafficPage({ scenario, mockEnabled }: { scenario: MockScenario;
 
       <div className="traffic-charts">
         <div className="panel">
-          <div className="panel-title"><h2>Packets in system</h2><span>packets (buffer + server) vs simulated time</span></div>
+          <PanelTitle title="Packets in system" note="packets (buffer + server) vs simulated time" />
           <InSystemChart points={state.inSystem} duration={duration} theoryL={theory?.L ?? null} />
         </div>
         <div className="panel">
-          <div className="panel-title"><h2>Packet delay</h2><span>arrival to delivery, by delivery time</span></div>
+          <PanelTitle title="Packet delay" note="arrival to delivery, by delivery time" />
           <ul className="chart-legend" aria-label="Legend">
             <li><i className="legend-dot" />Each packet</li>
             <li><i className="legend-line" />Running mean</li>
@@ -393,7 +393,7 @@ export function TrafficPage({ scenario, mockEnabled }: { scenario: MockScenario;
       </div>
 
       <div className="panel">
-        <div className="panel-title"><h2>Event feed</h2><span>latest packet events · t is simulated time</span></div>
+        <PanelTitle title="Event feed" note="latest packet events · t is simulated time" />
         {state.feed.length === 0
           ? <p className="metric-empty">Start the traffic to see packets arrive, wait and get delivered.</p>
           : <ol className="event-feed">{state.feed.slice().reverse().map((line, i) => <li key={`${state.feed.length}-${i}`}>{line}</li>)}</ol>}

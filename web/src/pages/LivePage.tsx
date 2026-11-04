@@ -5,6 +5,7 @@ import type { AttackReport, AttackStatus, GatewayConfig, MockScenario, PDESRepor
 import { isAttackScenario, isNetworkScenario } from "../api/types";
 import { NetworkPlayer } from "../components/NetworkPlayer";
 import { ProgressBar, StateBadge, TaskGrid } from "../components/RunBits";
+import { EmptyState, LoadingState, Notice, PageHeading, SectionTitle } from "../components/PagePrimitives";
 import { formatDuration } from "../lib/format";
 import { partitionBreakdown } from "../lib/pdes";
 import { TopologyCanvas } from "../components/TopologyCanvas";
@@ -106,17 +107,15 @@ export function LivePage({ runId, scenario, mockEnabled }: { runId: string; scen
   if (loadError) {
     return (
       <section className="page-content">
-        <div className="empty-state">
-          <WifiOff size={22} />
-          <strong>{loadError.notFound ? "Run not found" : "Unable to load run"}</strong>
+        <EmptyState icon={<WifiOff size={22} />} title={loadError.notFound ? "Run not found" : "Unable to load run"}>
           <span>{loadError.notFound ? "The gateway has no record of this run." : loadError.message}</span>
           <a href="#/launch">Launch a new run</a>
-        </div>
+        </EmptyState>
       </section>
     );
   }
   if (!record) {
-    return <section className="page-content"><div className="loading-state" role="status"><span className="spinner" />Loading run</div></section>;
+    return <section className="page-content"><LoadingState>Loading run</LoadingState></section>;
   }
   if (record.params.kind === "pdes") {
     return <PDESLiveView api={api} runId={runId} record={record} status={status} state={state} />;
@@ -137,15 +136,14 @@ export function LivePage({ runId, scenario, mockEnabled }: { runId: string; scen
 
   return (
     <section className="page-content" aria-labelledby="live-heading">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">LIVE BATCH</p>
-          <h1 id="live-heading">Batch progress</h1>
-          <p className="lede">{phaseLabel}{state === "running" ? " · updating every 0.5 s" : ""}</p>
-        </div>
-        <div className="heading-actions" aria-live="polite"><StateBadge state={state} /></div>
-      </div>
-
+      <PageHeading
+        id="live-heading"
+        eyebrow="LIVE BATCH"
+        title="Batch progress"
+        lede={<>{phaseLabel}{state === "running" ? " · updating every 0.5 s" : ""}</>}
+        actions={<StateBadge state={state} />}
+        actionsLive="polite"
+      />
       <dl className="meta-strip">
         <div><dt>Coordinator</dt><dd>{record.coordinator}</dd></div>
         <div><dt>Base seed</dt><dd>{record.params.base_seed}</dd></div>
@@ -172,14 +170,14 @@ export function LivePage({ runId, scenario, mockEnabled }: { runId: string; scen
           <a className="banner-action" href={`#/report/${encodeURIComponent(runId)}`}>View report<ArrowRight size={15} /></a>
         </div>
       )}
-      {(state === "failed" || state === "unknown") && (
-        <div className="notice notice-error" role="alert">The gateway could not determine how this batch ended.</div>
-      )}
+      {state === "failed" || state === "unknown" ? (
+        <Notice kind="error">The gateway could not determine how this batch ended.</Notice>
+      ) : null}
       {pollError && state === "running" && (
-        <div className="notice notice-warning" role="status">Status unavailable: {pollError} Retrying with backoff.</div>
+        <Notice kind="warning">Status unavailable: {pollError} Retrying with backoff.</Notice>
       )}
       {legacyStatus?.stale && state !== "coordinator_lost" && (
-        <div className="notice notice-warning" role="status">Showing the last stored snapshot; the coordinator did not answer.</div>
+        <Notice kind="warning">Showing the last stored snapshot; the coordinator did not answer.</Notice>
       )}
 
       <div className="panel">
@@ -198,12 +196,12 @@ export function LivePage({ runId, scenario, mockEnabled }: { runId: string; scen
 
       {isNetworkScenario(record.params.scenario) ? (
         <>
-          <div className="section-title"><h2>Watch the traffic</h2><span>while the copies compute, play any of them here</span></div>
+          <SectionTitle title="Watch the traffic" note="while the copies compute, play any of them here" />
           <NetworkPlayer api={api} scenario={record.params.scenario} copies={copyList(record.params.base_seed, record.params.replications)} />
         </>
       ) : Boolean(config?.features?.task_grid) ? (
         <>
-          <div className="section-title"><h2>Replications</h2><span>{total.toLocaleString()} tasks</span></div>
+          <SectionTitle title="Replications" note={`${total.toLocaleString()} tasks`} />
           <TaskGrid tasks={legacyStatus?.tasks} enabled={true} peers={peers} mock={mockEnabled} />
         </>
       ) : null}
@@ -260,11 +258,13 @@ function PDESLiveView({ api, runId, record, status, state }: {
     : 0;
   return (
     <section className="page-content" aria-labelledby="live-heading">
-      <div className="page-heading">
-        <div><p className="eyebrow">PARTITIONED RUN</p><h1 id="live-heading">PDES progress</h1>
-          <p className="lede">{pdesStatus?.phase ?? "Waiting for status"} · seed {record.params.base_seed}</p></div>
-        <div className="heading-actions"><StateBadge state={state} /></div>
-      </div>
+      <PageHeading
+        id="live-heading"
+        eyebrow="PARTITIONED RUN"
+        title="PDES progress"
+        lede={<>{pdesStatus?.phase ?? "Waiting for status"} · seed {record.params.base_seed}</>}
+        actions={<StateBadge state={state} />}
+      />
       <dl className="meta-strip">
         <div><dt>Coordinator</dt><dd>{record.coordinator}</dd></div>
         <div><dt>Partitions</dt><dd>{record.params.parts ?? report?.plan.parts ?? "--"}</dd></div>
@@ -278,22 +278,22 @@ function PDESLiveView({ api, runId, record, status, state }: {
           <span className="progress-complete" style={{ width: `${progress}%` }} />
         </div>
       </div>
-      {pdesStatus?.stale && <div className="notice notice-warning" role="status">Showing the last stored partition snapshot; the coordinator is unavailable.</div>}
-      {state === "failed" && <div className="notice notice-error" role="alert">
+      {pdesStatus?.stale && <Notice kind="warning">Showing the last stored partition snapshot; the coordinator is unavailable.</Notice>}
+      {state === "failed" && <Notice kind="error">
         <strong>Partitioned run failed{pdesStatus?.failed_node ? ` on ${pdesStatus.failed_node}` : ""}.</strong> {pdesStatus?.error ?? report?.error ?? "The coordinator reported a worker failure."}
         {scenario && <button className="ghost-button" type="button" disabled={rerunning} onClick={() => void rerun()}>{rerunning ? "Rerunning…" : "Rerun on surviving nodes"}</button>}
         <a className="banner-action" href={`#/report/${encodeURIComponent(runId)}`}>View failure report<ArrowRight size={15} /></a>
-      </div>}
+      </Notice>}
       {state === "coordinator_lost" && <div className="lost-banner" role="alert">
         <Unplug size={20} /><div><strong>The coordinator {record.coordinator} stopped responding</strong>
           <p>The partition state was volatile; restart the same scenario and base seed on the surviving nodes.</p>
           {scenario && <button className="ghost-button" type="button" disabled={rerunning} onClick={() => void rerun()}>{rerunning ? "Rerunning…" : "Rerun on surviving nodes"}</button>}
         </div>
       </div>}
-      {rerunError && <div className="notice notice-error" role="alert">{rerunError}</div>}
+      {rerunError && <Notice kind="error">{rerunError}</Notice>}
       {state === "complete" && <div className="complete-banner" role="status"><span><strong>Partitioned run complete.</strong> Merged metrics are ready.</span>
         <a className="banner-action" href={`#/report/${encodeURIComponent(runId)}`}>View report<ArrowRight size={15} /></a></div>}
-      <div className="section-title"><h2>Per-partition timing</h2><span>compute versus barrier wait</span></div>
+      <SectionTitle title="Per-partition timing" note="compute versus barrier wait" />
       <div className="partition-timing-list">
         {timing.rows.map((row, index) => {
           const scale = timing.maxTotal || 1;
@@ -310,7 +310,7 @@ function PDESLiveView({ api, runId, record, status, state }: {
         <p className="partition-legend"><i className="partition-time-compute peer-0" /> Compute <i className="partition-time-wait" /> Barrier wait · {timing.totalCompute.toFixed(2)}s total compute / {timing.totalWait.toFixed(2)}s total wait</p>
       </div>
       {scenario && report?.plan && <div className="pdes-topology-preview">
-        <div className="section-title"><h2>Partition map</h2><span>cut links connect different owners</span></div>
+        <SectionTitle title="Partition map" note="cut links connect different owners" />
         <TopologyCanvas scenario={scenario} mode="partition" partitionAssignment={report.plan.assignment} cutLinks={report.plan.cut_links} />
       </div>}
     </section>
@@ -366,11 +366,13 @@ function AttackLiveView({ api, runId, record, status, state }: {
     : 0;
   return (
     <section className="page-content" aria-labelledby="live-heading">
-      <div className="page-heading">
-        <div><p className="eyebrow">PARTITIONED THREAT CAMPAIGN</p><h1 id="live-heading">Campaign progress</h1>
-          <p className="lede">{attackStatus?.phase ?? "Waiting for status"} · seed {record.params.base_seed}</p></div>
-        <div className="heading-actions"><StateBadge state={state} /></div>
-      </div>
+      <PageHeading
+        id="live-heading"
+        eyebrow="PARTITIONED THREAT CAMPAIGN"
+        title="Campaign progress"
+        lede={<>{attackStatus?.phase ?? "Waiting for status"} · seed {record.params.base_seed}</>}
+        actions={<StateBadge state={state} />}
+      />
       <dl className="meta-strip">
         <div><dt>Coordinator</dt><dd>{record.coordinator}</dd></div>
         <div><dt>Partitions</dt><dd>{record.params.parts ?? report?.plan.parts ?? "--"}</dd></div>
@@ -384,22 +386,22 @@ function AttackLiveView({ api, runId, record, status, state }: {
           <span className="progress-complete" style={{ width: `${progress}%` }} />
         </div>
       </div>
-      {attackStatus?.stale && <div className="notice notice-warning" role="status">Showing the last stored partition snapshot; the coordinator is unavailable.</div>}
-      {state === "failed" && <div className="notice notice-error" role="alert">
+      {attackStatus?.stale && <Notice kind="warning">Showing the last stored partition snapshot; the coordinator is unavailable.</Notice>}
+      {state === "failed" && <Notice kind="error">
         <strong>Campaign failed{attackStatus?.failed_node ? ` on ${attackStatus.failed_node}` : ""}.</strong> {attackStatus?.error ?? report?.error ?? "The coordinator reported a worker failure."}
         {scenario && <button className="ghost-button" type="button" disabled={rerunning} onClick={() => void rerun()}>{rerunning ? "Rerunning…" : "Rerun on surviving nodes"}</button>}
         <a className="banner-action" href={`#/report/${encodeURIComponent(runId)}`}>View failure report<ArrowRight size={15} /></a>
-      </div>}
+      </Notice>}
       {state === "coordinator_lost" && <div className="lost-banner" role="alert">
         <Unplug size={20} /><div><strong>The coordinator {record.coordinator} stopped responding</strong>
           <p>The campaign state was volatile; restart the same campaign and base seed on the surviving nodes.</p>
           {scenario && <button className="ghost-button" type="button" disabled={rerunning} onClick={() => void rerun()}>{rerunning ? "Rerunning…" : "Rerun on surviving nodes"}</button>}
         </div>
       </div>}
-      {rerunError && <div className="notice notice-error" role="alert">{rerunError}</div>}
+      {rerunError && <Notice kind="error">{rerunError}</Notice>}
       {state === "complete" && <div className="complete-banner" role="status"><span><strong>Campaign complete.</strong> Merged campaign samples are ready.</span>
         <a className="banner-action" href={`#/report/${encodeURIComponent(runId)}`}>View report<ArrowRight size={15} /></a></div>}
-      <div className="section-title"><h2>Per-partition timing</h2><span>compute versus barrier wait</span></div>
+      <SectionTitle title="Per-partition timing" note="compute versus barrier wait" />
       <div className="partition-timing-list">
         {timing.rows.map((row, index) => {
           const scale = timing.maxTotal || 1;

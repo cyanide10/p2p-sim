@@ -2,6 +2,7 @@ import { Activity, Check, CircleX, Copy, Network, TriangleAlert } from "lucide-r
 import { useState } from "react";
 import type { PDESMetrics, PDESReport } from "../api/types";
 import { TopologyCanvas } from "../components/TopologyCanvas";
+import { EmptyState, Notice, PageHeading, SectionTitle } from "../components/PagePrimitives";
 import { formatDuration, formatSpeedup } from "../lib/format";
 import { partitionBreakdown } from "../lib/pdes";
 
@@ -10,7 +11,7 @@ function MetricTable({ title, values }: { title: string; values: Record<string, 
   const columns = [...new Set(Object.values(values).flatMap((row) => Object.keys(row)))];
   return (
     <section className="pdes-metric-section">
-      <div className="section-title"><h2>{title}</h2><span>{ids.length} items</span></div>
+      <SectionTitle title={title} note={`${ids.length} items`} />
       {!ids.length ? <p className="muted">No merged values.</p> : <div className="table-scroll">
         <table className="net-table pdes-metric-table"><thead><tr><th scope="col">ID</th>{columns.map((column) => <th scope="col" key={column}>{column.replaceAll("_", " ")}</th>)}</tr></thead>
           <tbody>{ids.map((id) => <tr key={id}><th scope="row">{id}</th>{columns.map((column) => {
@@ -45,19 +46,21 @@ export function PDESReportView({ report, runId }: { report: PDESReport; runId: s
 
   return (
     <section className="page-content" aria-labelledby="pdes-report-heading">
-      <div className="page-heading">
-        <div><p className="eyebrow">PARTITIONED NETWORK REPORT</p><h1 id="pdes-report-heading">Merged results</h1>
-          <p className="lede">{report.batch_id} · coordinated by {report.coordinator} · seed {report.base_seed}</p></div>
-        <div className="heading-actions">
+      <PageHeading
+        id="pdes-report-heading"
+        eyebrow="PARTITIONED NETWORK REPORT"
+        title="Merged results"
+        lede={`${report.batch_id} · coordinated by ${report.coordinator} · seed ${report.base_seed}`}
+        actions={<>
           <a className="ghost-button" href="#/network"><Network size={15} />Network lab</a>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}><Activity size={15} />Progress</a>
           <button className="ghost-button" type="button" onClick={() => void copy()}><Copy size={15} />{copied === "copied" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy JSON"}</button>
-        </div>
-      </div>
-      {report.stale && <div className="notice notice-warning" role="status">Stored snapshot: the coordinator is unavailable.</div>}
-      {report.state === "failed" && <div className="notice notice-error" role="alert"><CircleX size={18} /><span><strong>Run failed{report.failed_node ? ` on ${report.failed_node}` : ""}.</strong> {report.error ?? "The coordinator reported a partition failure."}</span></div>}
+        </>}
+      />
+      {report.stale && <Notice kind="warning">Stored snapshot: the coordinator is unavailable.</Notice>}
+      {report.state === "failed" && <Notice kind="error"><CircleX size={18} /><span><strong>Run failed{report.failed_node ? ` on ${report.failed_node}` : ""}.</strong> {report.error ?? "The coordinator reported a partition failure."}</span></Notice>}
       {report.results_identical === true && <div className="serial-match serial-ok"><Check size={18} /><span>Serial and partitioned metrics are identical.</span></div>}
-      {report.results_identical === false && <div className="notice notice-error" role="alert"><TriangleAlert size={18} /><span><strong>Serial and partitioned results differ.</strong> First differing path: <code>{report.first_difference ?? "unknown"}</code></span></div>}
+      {report.results_identical === false && <Notice kind="error"><TriangleAlert size={18} /><span><strong>Serial and partitioned results differ.</strong> First differing path: <code>{report.first_difference ?? "unknown"}</code></span></Notice>}
 
       <div className="pdes-summary-grid">
         <article><span>Partitioned wall time</span><strong>{formatDuration(report.partitioned_wall_seconds)}</strong></article>
@@ -66,7 +69,7 @@ export function PDESReportView({ report, runId }: { report: PDESReport; runId: s
         <article><span>Lookahead / windows</span><strong>{report.plan.lookahead.toPrecision(4)} s · {report.plan.windows.toLocaleString()}</strong></article>
       </div>
 
-      <div className="section-title"><h2>Partition timing breakdown</h2><span>sum compute / barrier wait: {breakdown.totalCompute.toFixed(2)} s / {breakdown.totalWait.toFixed(2)} s</span></div>
+      <SectionTitle title="Partition timing breakdown" note={`sum compute / barrier wait: ${breakdown.totalCompute.toFixed(2)} s / ${breakdown.totalWait.toFixed(2)} s`} />
       <div className="partition-timing-list">
         {breakdown.rows.map((row, index) => {
           const scale = breakdown.maxTotal || 1;
@@ -81,18 +84,18 @@ export function PDESReportView({ report, runId }: { report: PDESReport; runId: s
         })}
       </div>
 
-      <div className="section-title"><h2>Partition map</h2><span>{report.plan.parts} parts · {report.plan.cut_links.length} cut links</span></div>
+      <SectionTitle title="Partition map" note={`${report.plan.parts} parts · ${report.plan.cut_links.length} cut links`} />
       <div className="pdes-topology-preview"><TopologyCanvas scenario={report.scenario} mode="partition"
         partitionAssignment={report.plan.assignment} cutLinks={report.plan.cut_links} /></div>
       {report.plan.cut_links.length > 0 && <p className="pdes-plan-note">Cut links: {report.plan.cut_links.join(", ")}</p>}
 
       {metrics ? <>
-        <div className="section-title"><h2>Aggregate network metrics</h2><span>merged over {metrics.duration.toLocaleString()} simulated seconds</span></div>
+        <SectionTitle title="Aggregate network metrics" note={`merged over ${metrics.duration.toLocaleString()} simulated seconds`} />
         <MetricSummary metrics={metrics} />
         <MetricTable title="Flow metrics" values={metrics.flows} />
         <MetricTable title="Link metrics" values={metrics.links} />
         <MetricTable title="Router metrics" values={metrics.routers} />
-      </> : <div className="empty-state"><Network size={20} /><strong>Metrics are not available</strong><span>The run failed before the partitions could merge their results.</span></div>}
+      </> : <EmptyState icon={<Network size={20} />} title="Metrics are not available"><span>The run failed before the partitions could merge their results.</span></EmptyState>}
     </section>
   );
 }

@@ -4,6 +4,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { ApiError, createApiClient } from "../api/client";
+import { PageHeading } from "../components/PagePrimitives";
 import type { AttackReport, AttackStatus, MockScenario, PartitionPlan, RunCreated } from "../api/types";
 import { AttackMap } from "../components/AttackMap";
 import {
@@ -442,17 +443,17 @@ export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario 
 
   return (
     <section className="page-content attack-content" aria-labelledby="attack-heading">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">THREAT OPERATIONS</p>
-          <h1 id="attack-heading">Attack</h1>
-          <p className="lede">Run a large-scale campaign against a live model of your estate, then trace the damage from first foothold to recovery.</p>
-        </div>
-        <div className="attack-head-tags">
+      <PageHeading
+        id="attack-heading"
+        eyebrow="THREAT OPERATIONS"
+        title="Attack"
+        lede="Run a large-scale campaign against a live model of your estate, then trace the damage from first foothold to recovery."
+        actionsWrap={false}
+        actions={<div className="attack-head-tags">
           <span className="attack-head-tag"><Cpu size={13} />{executionLabel}</span>
           <span className="attack-head-tag">Seed {seed}</span>
-        </div>
-      </div>
+        </div>}
+      />
 
       <div className="attack-scenarios" role="radiogroup" aria-label="Attack scenario">
         {ATTACK_ORDER.map((id) => {

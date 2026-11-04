@@ -2,6 +2,7 @@ import { LoaderCircle, Pause, Play, RotateCcw, TriangleAlert } from "lucide-reac
 import { useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../api/client";
 import { applyNetEvents, flowSlot, initialLive, playbackSpeeds, toWire, type NetLiveState, type NetStreamEvent, type Scenario } from "../lib/network";
+import { Notice } from "./PagePrimitives";
 import { TopologyCanvas } from "./TopologyCanvas";
 
 type Status = "idle" | "connecting" | "playing" | "paused" | "finished" | "error";
@@ -138,7 +139,7 @@ export function NetworkPlayer({ api, scenario, copies, autoPlay = false, default
             {pool.map((n) => <option key={n.id} value={n.id} disabled={!n.healthy}>{n.id}{n.healthy ? "" : " · down"}</option>)}
           </select></label>
       </div>
-      {live.error && <div className="notice notice-error" role="alert"><TriangleAlert size={15} />{live.error}</div>}
+      {live.error && <Notice kind="error"><TriangleAlert size={15} />{live.error}</Notice>}
 
       <div className="player-layout">
         <div className="net-canvas player-canvas">

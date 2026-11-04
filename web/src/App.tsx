@@ -2,6 +2,7 @@ import { Activity, CircleHelp, CircleX, Clock3, Network, RadioTower, RefreshCw, 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createApiClient } from "./api/client";
 import { MOCK_SCENARIOS, type ClusterSnapshot, type GatewayConfig, type MockScenario, type RunCreated } from "./api/types";
+import { EmptyState, LoadingState, Notice, PageHeading, SectionTitle } from "./components/PagePrimitives";
 import { parseHash } from "./lib/format";
 import { startPolling } from "./lib/poll";
 import { AttackPage } from "./pages/AttackPage";
@@ -68,13 +69,12 @@ function ClusterPage({
 
   return (
     <section className="page-content" aria-labelledby="cluster-heading">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">POOL OVERVIEW</p>
-          <h1 id="cluster-heading">Cluster</h1>
-          <p className="lede">Live health and membership as observed across the node pool.</p>
-        </div>
-        <div className="heading-actions">
+      <PageHeading
+        id="cluster-heading"
+        eyebrow="POOL OVERVIEW"
+        title="Cluster"
+        lede="Live health and membership as observed across the node pool."
+        actions={<>
           {mockEnabled && import.meta.env.DEV && (
             <label className="scenario-control">
               <span>Scenario</span>
@@ -86,11 +86,11 @@ function ClusterPage({
           <button className="icon-button" type="button" title="Refresh cluster" aria-label="Refresh cluster" onClick={() => setRefreshKey((value) => value + 1)}>
             <RefreshCw size={17} />
           </button>
-        </div>
-      </div>
+        </>}
+      />
 
-      {error && <div className="notice notice-error" role="alert">{error}</div>}
-      {disagreement && <div className="notice notice-warning" role="status">Peer views disagree. This may indicate a network partition.</div>}
+      {error && <Notice kind="error">{error}</Notice>}
+      {disagreement && <Notice kind="warning">Peer views disagree. This may indicate a network partition.</Notice>}
 
       <div className="summary-strip" aria-live="polite">
         <div className="summary-stat"><span>Configured nodes</span><strong>{config?.peers.length ?? "--"}</strong></div>
@@ -100,12 +100,12 @@ function ClusterPage({
       </div>
 
       {loading && !snapshot ? (
-        <div className="loading-state" role="status"><span className="spinner" />Connecting to cluster</div>
+        <LoadingState>Connecting to cluster</LoadingState>
       ) : !snapshot ? (
-        <div className="empty-state"><Network size={22} /><strong>Cluster data unavailable</strong><span>Check the gateway connection and try again.</span></div>
+        <EmptyState icon={<Network size={22} />} title="Cluster data unavailable"><span>Check the gateway connection and try again.</span></EmptyState>
       ) : (
         <>
-          <div className="section-title"><h2>Nodes</h2><span>{nodes.length} configured</span></div>
+          <SectionTitle title="Nodes" note={`${nodes.length} configured`} />
           <div className="node-grid">
             {nodes.map((node) => (
               <article className={`node-row ${node.healthy ? "" : "node-row-down"}`} key={node.id}>
@@ -124,7 +124,7 @@ function ClusterPage({
             ))}
           </div>
 
-          <div className="section-title matrix-title"><div><h2>Who sees whom</h2><p>Rows are observers; columns are observed nodes.</p></div></div>
+          <SectionTitle className="matrix-title" title="Who sees whom" note={<p>Rows are observers; columns are observed nodes.</p>} />
           <div className="matrix-frame">
             <table className="peer-matrix">
               <caption className="sr-only">Peer health observations by node</caption>
@@ -190,7 +190,7 @@ function App() {
           : activeRoute === "traffic" ? <TrafficPage scenario={scenario} mockEnabled={mockEnabled} />
           : activeRoute === "live" && routeId ? <LivePage runId={routeId} scenario={scenario} mockEnabled={mockEnabled} />
           : activeRoute === "report" && routeId ? <ReportPage runId={routeId} scenario={scenario} />
-          : <section className="page-content"><div className="empty-state"><CircleHelp size={22} /><strong>Page not found</strong><a href="#/cluster">Return to Cluster</a></div></section>}
+          : <section className="page-content"><EmptyState icon={<CircleHelp size={22} />} title="Page not found"><a href="#/cluster">Return to Cluster</a></EmptyState></section>}
       </main>
     </div>
   );
