@@ -59,7 +59,7 @@ function ScheduleInput({ points, onChange }: { points: Array<{ t: number; rate: 
 
 const patternLabel: Record<FlowPattern["type"], string> = { constant: "Steady", schedule: "Rate schedule", onoff: "Bursty on/off" };
 
-export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario; mockEnabled: boolean }) {
+export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario }) {
   const api = useMemo(() => createApiClient(mockScenario), [mockScenario]);
   const [sc, setSc] = useState<Scenario>(loadSaved);
   const [tool, setTool] = useState<Tool>("select");

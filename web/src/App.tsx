@@ -174,19 +174,18 @@ function App() {
         <div className="sidebar-caption">SIMULATION CONTROL</div>
         <nav className="primary-nav" aria-label="Primary navigation">
           <a className={activeRoute === "cluster" ? "active" : ""} href="#/cluster"><Network size={17} /><span>Cluster</span></a>
-          <a className={activeRoute === "network" ? "active" : ""} href="#/network"><Share2 size={17} /><span>Network lab</span></a>
-          <a className={activeRoute === "attack" ? "active" : ""} href="#/attack"><ShieldAlert size={17} /><span>Threat lab</span></a>
-          <a className={activeRoute === "traffic" ? "active" : ""} href="#/traffic"><RadioTower size={17} /><span>Live traffic</span></a>
+          <a className={activeRoute === "network" ? "active" : ""} href="#/network"><Share2 size={17} /><span>Network</span></a>
+          <a className={activeRoute === "attack" ? "active" : ""} href="#/attack"><ShieldAlert size={17} /><span>Attack</span></a>
+          <a className={activeRoute === "traffic" ? "active" : ""} href="#/traffic"><RadioTower size={17} /><span>Traffic</span></a>
           <a className={activeRoute === "launch" ? "active" : ""} href="#/launch"><Activity size={17} /><span>Launch run</span></a>
-          <a className="nav-muted" href="#/history" aria-disabled="true" onClick={(event) => event.preventDefault()}><Clock3 size={17} /><span>History</span><small>SOON</small></a>
         </nav>
         <div className="sidebar-footer"><span className="connection-indicator" />{mockEnabled ? "Mock environment" : "Gateway connection"}<span className="version-tag">{mockEnabled ? "DEV" : "LIVE"}</span></div>
       </aside>
       <main className="main-area">
-        <header className="topbar"><span>Distributed queueing simulator</span><span className="topbar-right">{mockEnabled ? "LOCAL PREVIEW" : "GATEWAY"}</span></header>
+        <header className="topbar"><span>Node pool simulator harness</span><span className="topbar-right">{mockEnabled ? "LOCAL PREVIEW" : "GATEWAY"}</span></header>
         {activeRoute === "cluster" ? <ClusterPage scenario={scenario} mockEnabled={mockEnabled} />
           : activeRoute === "launch" ? <LaunchPage key={query.get("resubmit") ?? "new"} scenario={scenario} onStarted={handleRunStarted} resubmitRunId={query.get("resubmit")} />
-          : activeRoute === "network" ? <NetworkPage scenario={scenario} mockEnabled={mockEnabled} />
+          : activeRoute === "network" ? <NetworkPage scenario={scenario} />
           : activeRoute === "attack" ? <AttackPage scenario={scenario} />
           : activeRoute === "traffic" ? <TrafficPage scenario={scenario} mockEnabled={mockEnabled} />
           : activeRoute === "live" && routeId ? <LivePage runId={routeId} scenario={scenario} mockEnabled={mockEnabled} />

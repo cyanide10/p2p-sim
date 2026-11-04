@@ -216,6 +216,9 @@ interface RemoteCampaign {
   report: AttackReport | null;
 }
 
+// AttackPage intentionally has no mockEnabled prop: the scenario select lives on the Cluster
+// page only, and the campaign model is computed locally (local mode) or driven through the
+// shared api client (worker/pdes modes), so mock/live status copy never depends on it.
 export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario }) {
   const api = useMemo(() => createApiClient(mockScenario), [mockScenario]);
   const [kind, setKind] = useState<AttackKind>("ddos");
@@ -442,7 +445,7 @@ export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario 
       <div className="page-heading">
         <div>
           <p className="eyebrow">THREAT OPERATIONS</p>
-          <h1 id="attack-heading">Attack theater</h1>
+          <h1 id="attack-heading">Attack</h1>
           <p className="lede">Run a large-scale campaign against a live model of your estate, then trace the damage from first foothold to recovery.</p>
         </div>
         <div className="attack-head-tags">

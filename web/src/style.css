@@ -80,7 +80,6 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline: 3px solid
 .primary-nav { display: grid; gap: 5px; }
 .primary-nav a { min-height: 42px; display: flex; align-items: center; gap: 11px; padding: 0 11px; border-radius: 5px; text-decoration: none; color: var(--muted); font-size: 13px; font-weight: 600; }
 .primary-nav a.active { color: var(--forest); background: var(--forest-soft); }
-.primary-nav a.nav-muted { opacity: .55; cursor: default; }
 .primary-nav small { margin-left: auto; font-size: 9px; letter-spacing: .5px; }
 .sidebar-footer { display: flex; align-items: center; gap: 8px; margin-top: auto; padding: 14px 9px 6px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
 .connection-indicator, .refresh-state i { width: 7px; height: 7px; border-radius: 50%; background: var(--forest); }
@@ -755,10 +754,9 @@ input:focus-visible { outline: 3px solid #e58a53; outline-offset: 1px; }
 .attack-node-units { fill: #5e8272; font-size: 8px; letter-spacing: .3px; pointer-events: none; }
 .attack-node.is-selected .attack-node-label { fill: var(--soc-info); }
 .attack-region { fill: #3f6557; font-size: 8px; font-weight: 700; letter-spacing: 1.9px; }
-.attack-map-count, .attack-map-clock, .attack-map-axis { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+.attack-map-count, .attack-map-clock { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
 .attack-map-count { fill: #5e8272; font-size: 9px; letter-spacing: .6px; }
 .attack-map-clock { fill: #7fa695; font-size: 10px; }
-.attack-map-axis { fill: #355b4b; font-size: 8px; }
 .attack-map-legend text { fill: #5e8272; font-size: 8px; }
 
 .attack-inspector { position: absolute; left: 12px; bottom: 12px; width: min(285px, calc(100% - 24px)); padding: 11px 12px; border: 1px solid #2a5b48; border-radius: 6px; background: rgba(6, 20, 15, .94); box-shadow: 0 12px 35px -18px #000; backdrop-filter: blur(7px); }

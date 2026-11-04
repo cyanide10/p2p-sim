@@ -279,7 +279,6 @@ export function AttackMap({ run, sample, clock, selectedId, onSelect }: Props) {
       </g>
       <text className="attack-map-count" x={VIEW_W - 28} y={34} textAnchor="end">{countLabel}</text>
       <text className="attack-map-clock" x={VIEW_W - 28} y={VIEW_H - 22} textAnchor="end">T+ {clock.toFixed(1)}s / {config.duration}s</text>
-      <text className="attack-map-axis" x={28} y={VIEW_H - 22}>GRID: {MAP_CENTER.x}/{MAP_CENTER.y} · SEED {config.seed}</text>
       <line x1={MAP_CENTER.x} y1={44} x2={MAP_CENTER.x} y2={VIEW_H - 44} stroke={COLORS.ring} strokeWidth="0.6" strokeDasharray="2 12" opacity="0.5" />
       <line x1={108} y1={MAP_CENTER.y} x2={VIEW_W - 108} y2={MAP_CENTER.y} stroke={COLORS.ring} strokeWidth="0.6" strokeDasharray="2 12" opacity="0.5" />
     </svg>

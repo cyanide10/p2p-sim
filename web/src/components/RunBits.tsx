@@ -53,7 +53,8 @@ export function TaskGrid({
   peers: string[];
   mock: boolean;
 }) {
-  if (!enabled || !tasks) {
+  if (!enabled) return null;
+  if (!tasks) {
     return (
       <div className="grid-placeholder">
         <CircleHelp size={18} />

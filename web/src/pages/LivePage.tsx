@@ -201,12 +201,12 @@ export function LivePage({ runId, scenario, mockEnabled }: { runId: string; scen
           <div className="section-title"><h2>Watch the traffic</h2><span>while the copies compute, play any of them here</span></div>
           <NetworkPlayer api={api} scenario={record.params.scenario} copies={copyList(record.params.base_seed, record.params.replications)} />
         </>
-      ) : (
+      ) : Boolean(config?.features?.task_grid) ? (
         <>
-      <div className="section-title"><h2>Replications</h2><span>{total.toLocaleString()} tasks</span></div>
-      <TaskGrid tasks={legacyStatus?.tasks} enabled={Boolean(config?.features?.task_grid)} peers={peers} mock={mockEnabled} />
+          <div className="section-title"><h2>Replications</h2><span>{total.toLocaleString()} tasks</span></div>
+          <TaskGrid tasks={legacyStatus?.tasks} enabled={true} peers={peers} mock={mockEnabled} />
         </>
-      )}
+      ) : null}
     </section>
   );
 }

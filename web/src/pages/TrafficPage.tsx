@@ -321,7 +321,7 @@ export function TrafficPage({ scenario, mockEnabled }: { scenario: MockScenario;
       <div className="page-heading">
         <div>
           <p className="eyebrow">LIVE TRAFFIC</p>
-          <h1 id="traffic-heading">Packet traffic</h1>
+          <h1 id="traffic-heading">Traffic</h1>
           <p className="lede">One router queue, simulated in real time on the node you pick. Every packet you see is an event from that node.</p>
         </div>
         <div className="heading-actions"><span className={`state-badge traffic-${status}`}>{running && <LoaderCircle size={14} className="button-spin" />}{statusLabels[status]}</span></div>
