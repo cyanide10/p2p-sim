@@ -62,11 +62,32 @@ export function SectionTitle({
 }
 
 /** Header inside a panel: h2 + muted note, baseline aligned. */
-export function PanelTitle({ title, note }: { title: string; note?: ReactNode }) {
+export function PanelTitle({
+  title,
+  note,
+  action,
+  eyebrow,
+  id,
+  tone,
+  className,
+}: {
+  title: string;
+  note?: ReactNode;
+  action?: ReactNode;
+  eyebrow?: string;
+  id?: string;
+  tone?: "pdes" | "soc";
+  className?: string;
+}) {
+  const classes = ["panel-title", tone ? `panel-title--${tone}` : "", className ?? ""].filter(Boolean).join(" ");
   return (
-    <div className="panel-title">
-      <h2>{title}</h2>
+    <div className={classes}>
+      <div className="panel-title-main">
+        {eyebrow && <p className="eyebrow">{eyebrow}</p>}
+        <h2 id={id}>{title}</h2>
+      </div>
       {note && <span>{note}</span>}
+      {action}
     </div>
   );
 }

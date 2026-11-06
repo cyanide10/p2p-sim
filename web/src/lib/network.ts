@@ -74,6 +74,18 @@ export function peakRate(flow: Flow): number {
   return flow.pattern.type === "schedule" ? Math.max(0, ...flow.pattern.points.map((p) => p.rate)) : flow.rate;
 }
 
+export function parseRateSchedule(text: string): Array<{ t: number; rate: number }> | null {
+  const points = text.split(/[,\n]/).map((part) => part.trim()).filter(Boolean).map((part) => {
+    const fields = part.split(":");
+    if (fields.length !== 2) return { t: Number.NaN, rate: Number.NaN };
+    const [t, rate] = fields.map((value) => Number(value.trim()));
+    return { t, rate };
+  });
+  return points.length > 0 && points.every((point) =>
+    Number.isFinite(point.t) && point.t >= 0 && Number.isFinite(point.rate) && point.rate >= 0,
+  ) ? points : null;
+}
+
 export function offeredPackets(sc: Scenario): number {
   return sc.flows.reduce((sum, f) => sum + peakRate(f), 0) * sc.duration;
 }

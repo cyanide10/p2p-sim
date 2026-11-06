@@ -30,6 +30,30 @@ export function describeQueueLoad(lambda: number, mu: number, rho: number): stri
   return `~${compact(lambda)} requests/s in · service ~${compact(mu)}/s · ~${Math.round(rho * 100)}% loaded`;
 }
 
+const PDES_METRIC_LABELS: Record<string, string> = {
+  sent: "Sent (packets)",
+  delivered: "Delivered (packets)",
+  dropped: "Dropped (packets)",
+  loss_rate: "Loss rate (%)",
+  mean_delay: "Mean delay (s)",
+  p95_delay: "95th percentile delay (s)",
+  throughput: "Throughput (packets/s)",
+  utilization: "Utilization (%)",
+  ci95_low: "Lower bound",
+  ci95_high: "Upper bound",
+  ci95_half_width: "95% CI half-width",
+};
+
+export function pdesMetricLabel(key: string): string {
+  return PDES_METRIC_LABELS[key] ?? key.replaceAll("_", " ");
+}
+
+export function formatPdesMetricValue(key: string, value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "--";
+  if (key === "loss_rate" || key === "utilization") return `${(value * 100).toFixed(2)}%`;
+  return Number.isInteger(value) ? value.toLocaleString() : value.toPrecision(5);
+}
+
 /** Parses "#/route/id?key=value" into its parts. */
 export function parseHash(hash: string): { route: string; id: string | null; query: URLSearchParams } {
   const [path, search = ""] = hash.replace(/^#\/?/, "").split("?", 2);

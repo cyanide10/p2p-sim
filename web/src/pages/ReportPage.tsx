@@ -7,7 +7,8 @@ import { PDESReportView } from "./PDESReport";
 import { AttackReportView } from "./AttackReport";
 import { MetricDotWhisker } from "../components/charts/DotWhisker";
 import { CopyJsonButton } from "../components/CopyJsonButton";
-import { EmptyState, LoadingState, Notice, PageHeading, PanelTitle, SectionTitle, StatStrip } from "../components/PagePrimitives";
+import { EmptyState, LoadingState, Notice, PanelTitle, SectionTitle, StatStrip } from "../components/PagePrimitives";
+import { ReportHeader } from "../components/ReportHeader";
 
 function isNetworkReport(report: RunReport): report is NetworkReport {
   return "kind" in report && report.kind === "network";
@@ -132,11 +133,13 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
 
   return (
     <section className="page-content" aria-labelledby="report-heading">
-      <PageHeading
+      <ReportHeader
         id="report-heading"
         eyebrow="BATCH REPORT"
         title="Report"
-        lede={`${report.batch_id} · coordinated by ${report.coordinator}`}
+        batchId={report.batch_id}
+        coordinator={report.coordinator}
+        seed={report.base_seed}
         actions={<>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}><Activity size={15} />Live view</a>
           <CopyJsonButton value={report} label="Copy as JSON" />

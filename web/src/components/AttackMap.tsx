@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, type KeyboardEvent } from "react";
 import type { AttackKind, AttackNode, AttackPath, AttackRun, AttackSample, NodeState } from "../lib/attack";
 import { MAP_CENTER, VIEW_H, VIEW_W } from "../lib/attack";
 
@@ -144,8 +144,8 @@ export function AttackMap({ run, sample, clock, selectedId, onSelect }: Props) {
     : `${visibleNodes.filter((node) => node.role === "endpoint").length} workstation subnets · ${config.scale.toLocaleString()} exposed hosts`;
 
   return (
-    <svg className="attack-map" viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} role="img"
-      aria-label={`Network attack map for ${scenario.label}: ${config.scale.toLocaleString()} scale, target ${sample.targetState}`}
+    <svg className="attack-map" viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} role="group"
+      aria-label={`Interactive network attack map for ${scenario.label}: ${config.scale.toLocaleString()} scale, target ${sample.targetState}. Focus a node and press Enter or Space to inspect it.`}
       onPointerDown={() => onSelect(null)}>
       <defs>
         <radialGradient id={bgId} cx="50%" cy="47%" r="72%">
@@ -220,11 +220,26 @@ export function AttackMap({ run, sample, clock, selectedId, onSelect }: Props) {
         const isSelected = selectedId === node.id;
         const labelY = isTarget ? 60 : size + 15;
         const targetPulse = isTarget ? 1 + 0.05 * Math.sin(clock * 2.2) : 1;
+        const nodeLabel = `${node.label} · ${node.role} · ${node.region}`;
+        const selectOnKey = (event: KeyboardEvent<SVGGElement>) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onSelect(node.id);
+          } else if (event.key === "Escape") {
+            onSelect(null);
+          }
+        };
         return (
           <g key={node.id} className={`attack-node role-${node.role} ${compromised ? "is-compromised" : ""} ${isSelected ? "is-selected" : ""}`}
             transform={`translate(${node.x}, ${node.y})`}
+            role="button"
+            tabIndex={0}
+            aria-label={`${nodeLabel} · ${node.units.toLocaleString()} units · load ${((state?.load ?? 0) * 100).toFixed(0)}% · compromise ${Math.round((state?.compromise ?? 0) * 100)}%`}
+            aria-pressed={isSelected}
+            onFocus={() => onSelect(node.id)}
+            onKeyDown={selectOnKey}
             onPointerDown={(event) => { event.stopPropagation(); onSelect(node.id); }}>
-            <title>{`${node.label} · ${node.role} · ${node.region} · ${node.units.toLocaleString()} units · load ${((state?.load ?? 0) * 100).toFixed(0)}% · compromise ${Math.round((state?.compromise ?? 0) * 100)}%`}</title>
+            <title>{`${nodeLabel} · ${node.units.toLocaleString()} units · load ${((state?.load ?? 0) * 100).toFixed(0)}% · compromise ${Math.round((state?.compromise ?? 0) * 100)}%`}</title>
             {(isTarget || compromised || (state?.load ?? 0) > 0.9) && (
               <circle r={size + 12 + (isTarget ? 12 * targetPulse : 4)} fill={color} opacity={isTarget ? 0.09 + sample.threat / 900 : 0.08} />
             )}

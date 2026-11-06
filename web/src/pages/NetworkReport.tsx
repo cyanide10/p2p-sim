@@ -5,8 +5,9 @@ import type { Band, Estimate, NetworkReport } from "../api/types";
 import { AxisFrame, type AxisGeometry } from "../components/charts/AxisFrame";
 import { CopyJsonButton } from "../components/CopyJsonButton";
 import { NetworkPlayer } from "../components/NetworkPlayer";
+import { ReportHeader } from "../components/ReportHeader";
 import { TopologyCanvas } from "../components/TopologyCanvas";
-import { Notice, PageHeading, PanelTitle, SectionTitle, StatStrip } from "../components/PagePrimitives";
+import { Notice, PanelTitle, SectionTitle, StatStrip } from "../components/PagePrimitives";
 import { linePath, niceScale, seriesSummary, timeTicks } from "../lib/chart";
 import { formatDuration } from "../lib/format";
 import { flowSlot, type Scenario } from "../lib/network";
@@ -100,11 +101,14 @@ export function NetworkReportView({ report, runId, api }: { report: NetworkRepor
 
   return (
     <section className="page-content" aria-labelledby="netreport-heading">
-      <PageHeading
+      <ReportHeader
         id="netreport-heading"
         eyebrow="NETWORK REPORT"
         title="Network results"
-        lede={`${done} independent copies of the network, combined · ${report.batch_id} · coordinated by ${report.coordinator}`}
+        ledePrefix={`${done} independent copies of the network, combined · `}
+        batchId={report.batch_id}
+        coordinator={report.coordinator}
+        seed={report.base_seed}
         actions={<>
           <a className="ghost-button" href="#/network"><Network size={15} />Edit network</a>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}><Activity size={15} />Progress</a>
@@ -133,9 +137,17 @@ export function NetworkReportView({ report, runId, api }: { report: NetworkRepor
       ]} />
 
       <div className="panel">
-        <PanelTitle title="Average load" note="darker and thicker = busier · hover a link or router for its value" />
-        <div className="net-heat-legend" aria-hidden="true"><span>0%</span><i /><span>100%</span><span className="topo-congested-chip">⚠ ≥ 85%</span></div>
-        <div className="net-canvas net-canvas-report"><TopologyCanvas scenario={sc} mode="heat" heat={heat} routerHeat={routerHeat} flowIndex={flowIndex} /></div>
+        <PanelTitle title="Average load" note="Tables below are the authoritative values." />
+        <div className="net-heat-counts">
+          <span>{sc.links.length} links</span>
+          <span>{Object.keys(report.routers).length} routers</span>
+          <span>{Object.values(report.links).filter((metric) => (metric.utilization?.mean ?? 0) >= 0.85).length} links at or above 85%</span>
+        </div>
+        <details className="net-heat-details">
+          <summary>Show load heat map</summary>
+          <div className="net-heat-legend"><span>0%</span><i /><span>100%</span><span className="topo-congested-chip">⚠ ≥ 85%</span></div>
+          <div className="net-canvas net-canvas-report"><TopologyCanvas scenario={sc} mode="heat" heat={heat} routerHeat={routerHeat} flowIndex={flowIndex} /></div>
+        </details>
       </div>
 
       <div className="traffic-charts">

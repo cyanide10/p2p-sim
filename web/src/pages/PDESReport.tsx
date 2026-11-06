@@ -1,24 +1,37 @@
 import { Activity, Check, CircleX, Network, TriangleAlert } from "lucide-react";
 import { CopyJsonButton } from "../components/CopyJsonButton";
+import { ReportHeader } from "../components/ReportHeader";
 import type { PDESMetrics, PDESReport } from "../api/types";
 import { PartitionTimingList } from "../components/PartitionTiming";
 import { TopologyCanvas } from "../components/TopologyCanvas";
-import { EmptyState, Notice, PageHeading, SectionTitle, StatStrip } from "../components/PagePrimitives";
-import { formatDuration, formatSpeedup } from "../lib/format";
+import { EmptyState, Notice, SectionTitle, StatStrip } from "../components/PagePrimitives";
+import { formatDuration, formatPdesMetricValue, formatSpeedup, pdesMetricLabel } from "../lib/format";
 import { partitionBreakdown } from "../lib/pdes";
 
 function MetricTable({ title, values }: { title: string; values: Record<string, Record<string, number | null>> }) {
   const ids = Object.keys(values);
   const columns = [...new Set(Object.values(values).flatMap((row) => Object.keys(row)))];
+  const confidenceColumns = columns.filter((column) => column.startsWith("ci95_"));
+  const metricColumns = columns.filter((column) => !column.startsWith("ci95_"));
+  const orderedColumns = [...metricColumns, ...confidenceColumns];
   return (
     <section className="pdes-metric-section">
       <SectionTitle title={title} note={`${ids.length} items`} />
       {!ids.length ? <p className="muted">No merged values.</p> : <div className="table-scroll">
-        <table className="net-table pdes-metric-table"><thead><tr><th scope="col">ID</th>{columns.map((column) => <th scope="col" key={column}>{column.replaceAll("_", " ")}</th>)}</tr></thead>
-          <tbody>{ids.map((id) => <tr key={id}><th scope="row">{id}</th>{columns.map((column) => {
-            const value = values[id][column];
-            return <td key={column}>{value === null || value === undefined ? "--" : Number.isInteger(value) ? value.toLocaleString() : value.toPrecision(5)}</td>;
-          })}</tr>)}</tbody>
+        <table className="net-table pdes-metric-table">
+          <thead>
+            <tr>
+              <th scope="col" rowSpan={confidenceColumns.length ? 2 : 1}>ID</th>
+              {metricColumns.map((column) => <th scope="col" key={column} rowSpan={confidenceColumns.length ? 2 : 1}>{pdesMetricLabel(column)}</th>)}
+              {confidenceColumns.length > 0 && <th scope="colgroup" colSpan={confidenceColumns.length}>95% confidence interval</th>}
+            </tr>
+            {confidenceColumns.length > 0 && <tr>{confidenceColumns.map((column) => <th scope="col" key={column}>{pdesMetricLabel(column)}</th>)}</tr>}
+          </thead>
+          <tbody>{ids.map((id) => <tr key={id}><th scope="row">{id}</th>{orderedColumns.map((column) => (
+            <td key={column} className={column.startsWith("ci95_") ? "pdes-ci-column" : undefined}>
+              {formatPdesMetricValue(column, values[id][column])}
+            </td>
+          ))}</tr>)}</tbody>
         </table>
       </div>}
     </section>
@@ -30,7 +43,7 @@ function MetricSummary({ metrics }: { metrics: PDESMetrics }) {
   return <dl className="pdes-total-grid">
     {["sent", "delivered", "dropped", "loss_rate", "mean_delay", "throughput"].map((key) => {
       const value = totals[key];
-      return <div key={key}><dt>{key.replaceAll("_", " ")}</dt><dd>{value === null || value === undefined ? "--" : key.endsWith("_rate") ? `${(value * 100).toFixed(2)}%` : Number.isInteger(value) ? value.toLocaleString() : value.toPrecision(5)}</dd></div>;
+      return <div key={key}><dt>{pdesMetricLabel(key)}</dt><dd>{formatPdesMetricValue(key, value)}</dd></div>;
     })}
   </dl>;
 }
@@ -41,11 +54,13 @@ export function PDESReportView({ report, runId }: { report: PDESReport; runId: s
 
   return (
     <section className="page-content" aria-labelledby="pdes-report-heading">
-      <PageHeading
+      <ReportHeader
         id="pdes-report-heading"
         eyebrow="PARTITIONED NETWORK REPORT"
         title="Merged results"
-        lede={`${report.batch_id} · coordinated by ${report.coordinator} · seed ${report.base_seed}`}
+        batchId={report.batch_id}
+        coordinator={report.coordinator}
+        seed={report.base_seed}
         actions={<>
           <a className="ghost-button" href="#/network"><Network size={15} />Network lab</a>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}><Activity size={15} />Progress</a>

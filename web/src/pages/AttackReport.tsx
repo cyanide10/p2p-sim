@@ -3,8 +3,9 @@ import { useMemo, useState } from "react";
 import type { AttackReport } from "../api/types";
 import { AttackMap } from "../components/AttackMap";
 import { CopyJsonButton } from "../components/CopyJsonButton";
-import { EmptyState, Notice, PageHeading, SectionTitle, StatStrip } from "../components/PagePrimitives";
+import { EmptyState, Notice, SectionTitle, StatStrip } from "../components/PagePrimitives";
 import { PartitionTimingList } from "../components/PartitionTiming";
+import { ReportHeader } from "../components/ReportHeader";
 import {
   ATTACK_SCENARIOS, attackRunFromMetrics, compact, percent,
   type AttackConfig, type AttackSample,
@@ -64,11 +65,13 @@ export function AttackReportView({ report, runId }: { report: AttackReport; runI
 
   return (
     <section className="page-content" aria-labelledby="attack-report-heading">
-      <PageHeading
+      <ReportHeader
         id="attack-report-heading"
         eyebrow={`THREAT CAMPAIGN REPORT · ${scenario.codename}`}
         title={scenario.label}
-        lede={`${report.batch_id} · coordinated by ${report.coordinator} · seed ${report.base_seed}`}
+        batchId={report.batch_id}
+        coordinator={report.coordinator}
+        seed={report.base_seed}
         actions={<>
           <a className="ghost-button" href="#/attack"><Crosshair size={15} />Threat lab</a>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}>Progress</a>
@@ -102,15 +105,17 @@ export function AttackReportView({ report, runId }: { report: AttackReport; runI
         { label: "Mitigation", value: summary ? percent(summary.blockedPct) : "--" },
       ]} />
 
-      <SectionTitle title="Execution" note={report.plan.parts === 1 ? "single worker" : `${report.plan.parts} partitions in lock-step`} />
-      <StatStrip variant="pdes" items={[
-        { label: "Partitioned wall time", value: formatDuration(report.partitioned_wall_seconds) },
-        { label: "Serial baseline", value: report.baseline_wall_seconds === undefined ? "Not run" : formatDuration(report.baseline_wall_seconds) },
-        { label: "Speedup", value: report.speedup === undefined ? "--" : formatSpeedup(report.speedup) },
-        { label: "Lookahead / windows", value: <>{report.plan.lookahead.toPrecision(4)} s · {report.plan.windows.toLocaleString()}</> },
-        { label: "Campaign scale", value: compact(report.scenario.scale, 1) },
-        { label: "Defensive posture", value: <>{report.scenario.defense}%</> },
-      ]} />
+      <details className="attack-report-execution">
+        <summary>Execution details · {report.plan.parts === 1 ? "single worker" : `${report.plan.parts} partitions in lock-step`}</summary>
+        <StatStrip variant="pdes" items={[
+          { label: "Partitioned wall time", value: formatDuration(report.partitioned_wall_seconds) },
+          { label: "Serial baseline", value: report.baseline_wall_seconds === undefined ? "Not run" : formatDuration(report.baseline_wall_seconds) },
+          { label: "Speedup", value: report.speedup === undefined ? "--" : formatSpeedup(report.speedup) },
+          { label: "Lookahead / windows", value: <>{report.plan.lookahead.toPrecision(4)} s · {report.plan.windows.toLocaleString()}</> },
+          { label: "Campaign scale", value: compact(report.scenario.scale, 1) },
+          { label: "Defensive posture", value: <>{report.scenario.defense}%</> },
+        ]} />
+      </details>
 
       <SectionTitle title="Partition timing breakdown" note={`sum compute / barrier wait: ${breakdown.totalCompute.toFixed(2)} s / ${breakdown.totalWait.toFixed(2)} s`} />
       <PartitionTimingList breakdown={breakdown} messagesDetail />
