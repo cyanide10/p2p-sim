@@ -1,7 +1,8 @@
-import { Activity, CircleHelp, CircleX, Clock3, Network, RadioTower, RefreshCw, Share2, ShieldAlert } from "lucide-react";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { Activity, ChevronDown, CircleHelp, CircleX, Clock3, Network, RadioTower, RefreshCw, Share2, ShieldAlert } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createApiClient } from "./api/client";
 import { MOCK_SCENARIOS, type ClusterSnapshot, type GatewayConfig, type MockScenario, type RunCreated } from "./api/types";
+import { EmptyState, LoadingState, Notice, PageHeading, SectionTitle, StatStrip } from "./components/PagePrimitives";
 import { parseHash } from "./lib/format";
 import { startPolling } from "./lib/poll";
 import { AttackPage } from "./pages/AttackPage";
@@ -30,11 +31,15 @@ function ClusterPage({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [manualState, setManualState] = useState<"idle" | "checking" | "done">("idle");
+  const [matrixOpen, setMatrixOpen] = useState(false);
+  const manualRefresh = useRef(false);
   const client = useMemo(() => createApiClient(scenario), [scenario]);
 
   useEffect(() => {
     let active = true;
     const refresh = async () => {
+      const manual = manualRefresh.current;
       try {
         const [nextConfig, nextSnapshot] = await Promise.all([
           client.getConfig(),
@@ -44,8 +49,16 @@ function ClusterPage({
         setConfig(nextConfig);
         setSnapshot(nextSnapshot);
         setError(null);
+        if (manual) {
+          manualRefresh.current = false;
+          setManualState("done");
+        }
       } catch (cause) {
         if (active) setError(cause instanceof Error ? cause.message : "Unable to load cluster data.");
+        if (manual) {
+          manualRefresh.current = false;
+          setManualState("idle");
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -57,6 +70,14 @@ function ClusterPage({
     };
   }, [client, refreshKey]);
 
+  // "Just checked" is a short-lived acknowledgement of the manual refresh;
+  // the label returns to the 3 sec auto-poll wording afterwards.
+  useEffect(() => {
+    if (manualState !== "done") return;
+    const timer = window.setTimeout(() => setManualState("idle"), 4000);
+    return () => window.clearTimeout(timer);
+  }, [manualState]);
+
   const nodes = snapshot?.nodes ?? [];
   const disagreement = nodes.some((observer) =>
     nodes.some((observed) => {
@@ -65,16 +86,22 @@ function ClusterPage({
     }),
   );
   const lastUpdated = snapshot ? new Date(snapshot.updated_at).toLocaleTimeString() : "--";
+  const healthyCount = nodes.filter((node) => node.healthy).length;
+
+  // A disagreement is the one case where the matrix should not stay hidden:
+  // it is the authoritative view of who sees whom differently.
+  useEffect(() => {
+    if (disagreement) setMatrixOpen(true);
+  }, [disagreement]);
 
   return (
     <section className="page-content" aria-labelledby="cluster-heading">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">POOL OVERVIEW</p>
-          <h1 id="cluster-heading">Cluster</h1>
-          <p className="lede">Live health and membership as observed across the node pool.</p>
-        </div>
-        <div className="heading-actions">
+      <PageHeading
+        id="cluster-heading"
+        eyebrow="POOL OVERVIEW"
+        title="Cluster"
+        lede="Live health and membership as observed across the node pool."
+        actions={<>
           {mockEnabled && import.meta.env.DEV && (
             <label className="scenario-control">
               <span>Scenario</span>
@@ -83,29 +110,47 @@ function ClusterPage({
               </select>
             </label>
           )}
-          <button className="icon-button" type="button" title="Refresh cluster" aria-label="Refresh cluster" onClick={() => setRefreshKey((value) => value + 1)}>
+          <button
+            className="icon-button"
+            type="button"
+            title="Refresh cluster"
+            aria-label="Refresh cluster"
+            onClick={() => {
+              manualRefresh.current = true;
+              setManualState("checking");
+              setRefreshKey((value) => value + 1);
+            }}
+          >
             <RefreshCw size={17} />
           </button>
-        </div>
-      </div>
+        </>}
+      />
 
-      {error && <div className="notice notice-error" role="alert">{error}</div>}
-      {disagreement && <div className="notice notice-warning" role="status">Peer views disagree. This may indicate a network partition.</div>}
+      {error && <Notice kind="error">{error}</Notice>}
+      {disagreement && <Notice kind="warning">Nodes disagree about each other&rsquo;s health — possible partition.</Notice>}
 
-      <div className="summary-strip" aria-live="polite">
-        <div className="summary-stat"><span>Configured nodes</span><strong>{config?.peers.length ?? "--"}</strong></div>
-        <div className="summary-stat"><span>Healthy</span><strong>{nodes.filter((node) => node.healthy).length}<small> / {nodes.length}</small></strong></div>
-        <div className="summary-stat"><span>Last updated</span><strong className="time-value"><Clock3 size={15} />{lastUpdated}</strong></div>
-        <span className={`refresh-state ${loading ? "is-loading" : ""}`}><i />{loading ? "Connecting" : "Auto refresh · 3 sec"}</span>
-      </div>
+      <StatStrip
+        variant="summary"
+        live
+        items={[
+          { label: "Healthy", value: healthyCount, small: ` / ${nodes.length}` },
+          { label: "Last updated", value: <><Clock3 size={15} />{lastUpdated}</>, valueClassName: "time-value" },
+        ]}
+        extra={
+          <span className={`refresh-state ${loading || manualState === "checking" ? "is-loading" : ""} ${manualState === "done" ? "is-checked" : ""}`}>
+            <i />
+            {manualState === "checking" ? "Checking now" : manualState === "done" ? "Just checked" : loading ? "Connecting" : "Auto refresh · 3 sec"}
+          </span>
+        }
+      />
 
       {loading && !snapshot ? (
-        <div className="loading-state" role="status"><span className="spinner" />Connecting to cluster</div>
+        <LoadingState>Connecting to cluster</LoadingState>
       ) : !snapshot ? (
-        <div className="empty-state"><Network size={22} /><strong>Cluster data unavailable</strong><span>Check the gateway connection and try again.</span></div>
+        <EmptyState icon={<Network size={22} />} title="Cluster data unavailable"><span>Check the gateway connection and try again.</span></EmptyState>
       ) : (
         <>
-          <div className="section-title"><h2>Nodes</h2><span>{nodes.length} configured</span></div>
+          <SectionTitle title="Nodes" note={`${config?.peers.length ?? nodes.length} configured`} />
           <div className="node-grid">
             {nodes.map((node) => (
               <article className={`node-row ${node.healthy ? "" : "node-row-down"}`} key={node.id}>
@@ -113,7 +158,7 @@ function ClusterPage({
                   <span className={`health-dot ${node.healthy ? "healthy" : "unhealthy"}`} aria-hidden="true" />
                   <div><strong>{node.id}</strong><span>{node.url}</span></div>
                 </div>
-                <div className="node-observer">{node.observer_id === node.id ? <span className="self-marker">SELF</span> : node.observer_id ? `Seen by ${node.observer_id}` : <span className="muted">No observer</span>}</div>
+                <div className="node-observer">{node.observer_id === node.id ? <span className="self-marker">SELF</span> : node.observer_id ? <span className="muted">Observed by {node.observer_id}</span> : <span className="muted">No observer</span>}</div>
                 <div className="node-latency">{node.latency_ms === null ? "--" : `${node.latency_ms} ms`}</div>
                 <div className={`health-label ${node.healthy ? "text-healthy" : "text-unhealthy"}`}>
                   {node.healthy ? <Activity size={15} /> : <CircleX size={15} />}
@@ -124,8 +169,24 @@ function ClusterPage({
             ))}
           </div>
 
-          <div className="section-title matrix-title"><div><h2>Who sees whom</h2><p>Rows are observers; columns are observed nodes.</p></div></div>
-          <div className="matrix-frame">
+          <SectionTitle
+            className="matrix-title"
+            title="Who sees whom"
+            note={<p>Rows are observers; columns are the observed nodes.</p>}
+            action={
+              <button
+                className="disclosure-toggle"
+                type="button"
+                aria-expanded={matrixOpen}
+                aria-controls="peer-health-matrix"
+                onClick={() => setMatrixOpen((open) => !open)}
+              >
+                {matrixOpen ? "Hide matrix" : "Show matrix"}
+                <ChevronDown size={14} className={matrixOpen ? "is-open" : ""} />
+              </button>
+            }
+          />
+          <div className="matrix-frame" id="peer-health-matrix" hidden={!matrixOpen}>
             <table className="peer-matrix">
               <caption className="sr-only">Peer health observations by node</caption>
               <thead><tr><th scope="col">Observer</th>{nodes.map((node) => <th scope="col" key={node.id}>{node.id}</th>)}</tr></thead>
@@ -174,24 +235,23 @@ function App() {
         <div className="sidebar-caption">SIMULATION CONTROL</div>
         <nav className="primary-nav" aria-label="Primary navigation">
           <a className={activeRoute === "cluster" ? "active" : ""} href="#/cluster"><Network size={17} /><span>Cluster</span></a>
-          <a className={activeRoute === "network" ? "active" : ""} href="#/network"><Share2 size={17} /><span>Network lab</span></a>
-          <a className={activeRoute === "attack" ? "active" : ""} href="#/attack"><ShieldAlert size={17} /><span>Threat lab</span></a>
-          <a className={activeRoute === "traffic" ? "active" : ""} href="#/traffic"><RadioTower size={17} /><span>Live traffic</span></a>
+          <a className={activeRoute === "network" ? "active" : ""} href="#/network"><Share2 size={17} /><span>Network</span></a>
+          <a className={activeRoute === "attack" ? "active" : ""} href="#/attack"><ShieldAlert size={17} /><span>Attack</span></a>
+          <a className={activeRoute === "traffic" ? "active" : ""} href="#/traffic"><RadioTower size={17} /><span>Traffic</span></a>
           <a className={activeRoute === "launch" ? "active" : ""} href="#/launch"><Activity size={17} /><span>Launch run</span></a>
-          <a className="nav-muted" href="#/history" aria-disabled="true" onClick={(event) => event.preventDefault()}><Clock3 size={17} /><span>History</span><small>SOON</small></a>
         </nav>
         <div className="sidebar-footer"><span className="connection-indicator" />{mockEnabled ? "Mock environment" : "Gateway connection"}<span className="version-tag">{mockEnabled ? "DEV" : "LIVE"}</span></div>
       </aside>
       <main className="main-area">
-        <header className="topbar"><span>Distributed queueing simulator</span><span className="topbar-right">{mockEnabled ? "LOCAL PREVIEW" : "GATEWAY"}</span></header>
+        <header className="topbar"><span>Node pool simulator harness</span><span className="topbar-right">{mockEnabled ? "LOCAL PREVIEW" : "GATEWAY"}</span></header>
         {activeRoute === "cluster" ? <ClusterPage scenario={scenario} mockEnabled={mockEnabled} />
           : activeRoute === "launch" ? <LaunchPage key={query.get("resubmit") ?? "new"} scenario={scenario} onStarted={handleRunStarted} resubmitRunId={query.get("resubmit")} />
-          : activeRoute === "network" ? <NetworkPage scenario={scenario} mockEnabled={mockEnabled} />
+          : activeRoute === "network" ? <NetworkPage scenario={scenario} />
           : activeRoute === "attack" ? <AttackPage scenario={scenario} />
           : activeRoute === "traffic" ? <TrafficPage scenario={scenario} mockEnabled={mockEnabled} />
           : activeRoute === "live" && routeId ? <LivePage runId={routeId} scenario={scenario} mockEnabled={mockEnabled} />
           : activeRoute === "report" && routeId ? <ReportPage runId={routeId} scenario={scenario} />
-          : <section className="page-content"><div className="empty-state"><CircleHelp size={22} /><strong>Page not found</strong><a href="#/cluster">Return to Cluster</a></div></section>}
+          : <section className="page-content"><EmptyState icon={<CircleHelp size={22} />} title="Page not found"><a href="#/cluster">Return to Cluster</a></EmptyState></section>}
       </main>
     </div>
   );

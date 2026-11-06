@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyNetEvents, playbackSpeeds, checkScenario, cloneScenario, generateGridScenario, HOP_MS, initialLive, nextId, offeredPackets, parseScenario, SAMPLES, toWire, type GridOptions, type NetStreamEvent } from "./network";
+import { applyNetEvents, playbackSpeeds, checkScenario, cloneScenario, generateGridScenario, HOP_MS, initialLive, nextId, offeredPackets, parseRateSchedule, parseScenario, SAMPLES, toWire, type GridOptions, type NetStreamEvent } from "./network";
 
 describe("samples", () => {
   it("are all valid", () => {
@@ -37,6 +37,24 @@ describe("ids and wire format", () => {
     const parsed = parseScenario({ duration: 10, nodes: [{ id: "a", kind: "host" }], links: [] });
     expect(parsed?.nodes[0].x).toBeTypeOf("number");
     expect(parseScenario({ nodes: "x" })).toBeNull();
+  });
+});
+
+describe("parseRateSchedule", () => {
+  it("parses comma- and line-separated time/rate points", () => {
+    expect(parseRateSchedule("0:10, 60:40\n120:10")).toEqual([
+      { t: 0, rate: 10 },
+      { t: 60, rate: 40 },
+      { t: 120, rate: 10 },
+    ]);
+  });
+
+  it("rejects empty, malformed and negative points", () => {
+    expect(parseRateSchedule("")).toBeNull();
+    expect(parseRateSchedule("a:1")).toBeNull();
+    expect(parseRateSchedule("1:2:3")).toBeNull();
+    expect(parseRateSchedule("-1:2")).toBeNull();
+    expect(parseRateSchedule("1:-2")).toBeNull();
   });
 });
 

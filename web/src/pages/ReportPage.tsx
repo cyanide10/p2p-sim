@@ -1,46 +1,24 @@
-import { Activity, Check, CircleCheck, CircleX, Copy, History, RotateCcw, TriangleAlert, Unplug } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Activity, Check, CircleCheck, CircleX, History, RotateCcw, TriangleAlert, Unplug } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ApiError, createApiClient } from "../api/client";
 import type { MetricComparison, MockScenario, NetworkReport, NodeReport, RunRecord, RunReport } from "../api/types";
 import { NetworkReportView } from "./NetworkReport";
 import { PDESReportView } from "./PDESReport";
 import { AttackReportView } from "./AttackReport";
+import { MetricDotWhisker } from "../components/charts/DotWhisker";
+import { CopyJsonButton } from "../components/CopyJsonButton";
+import { EmptyState, LoadingState, Notice, PanelTitle, SectionTitle, StatStrip } from "../components/PagePrimitives";
+import { ReportHeader } from "../components/ReportHeader";
 
 function isNetworkReport(report: RunReport): report is NetworkReport {
   return "kind" in report && report.kind === "network";
 }
-import { chartDomain } from "../lib/chart";
-import { formatDuration, formatNumber, formatPercent, formatSpeedup } from "../lib/format";
+import { describeQueueLoad, formatDuration, formatNumber, formatPercent, formatSpeedup } from "../lib/format";
 
 const SMALL_SAMPLE = 30;
 
-function MetricChart({ metric, label }: { metric: MetricComparison; label: string }) {
-  const [low, high] = chartDomain(metric);
-  const width = 320;
-  const x = (value: number) => 10 + ((value - low) / (high - low)) * (width - 20);
-  const band = Math.abs(metric.theoretical) * (metric.tolerance_pct / 100);
-  const summary = `${label}: mean ${formatNumber(metric.mean)}, 95% CI ${formatNumber(metric.ci95_low)} to ${formatNumber(metric.ci95_high)}, theoretical ${formatNumber(metric.theoretical)} ${metric.theoretical_in_ci ? "inside" : "outside"} the interval.`;
-  return (
-    <svg className="metric-chart" viewBox={`0 0 ${width} 58`} role="img" aria-label={summary}>
-      <rect className="chart-band" x={x(metric.theoretical - band)} y={6} width={Math.max(1, x(metric.theoretical + band) - x(metric.theoretical - band))} height={30} rx={2} />
-      <line className="chart-axis" x1={10} x2={width - 10} y1={21} y2={21} />
-      <line className="chart-theory" x1={x(metric.theoretical)} x2={x(metric.theoretical)} y1={3} y2={39} />
-      <line className="chart-ci" x1={x(metric.ci95_low)} x2={x(metric.ci95_high)} y1={21} y2={21} />
-      <line className="chart-ci" x1={x(metric.ci95_low)} x2={x(metric.ci95_low)} y1={14} y2={28} />
-      <line className="chart-ci" x1={x(metric.ci95_high)} x2={x(metric.ci95_high)} y1={14} y2={28} />
-      <circle className="chart-mean" cx={x(metric.mean)} cy={21} r={5} />
-      <text className="chart-label" x={10} y={54}>{formatNumber(low, 3)}</text>
-      <text className="chart-label chart-label-theory" x={x(metric.theoretical)} y={54} textAnchor="middle">theory {formatNumber(metric.theoretical, 3)}</text>
-      <text className="chart-label" x={width - 10} y={54} textAnchor="end">{formatNumber(high, 3)}</text>
-    </svg>
-  );
-}
-
-function Check2({ ok, yes, no }: { ok: boolean; yes: string; no: string }) {
-  return <span className={`check ${ok ? "check-ok" : "check-bad"}`}>{ok ? <Check size={13} /> : <CircleX size={13} />}{ok ? yes : no}</span>;
-}
-
 function MetricCard({ title, symbol, metric, informational }: { title: string; symbol: string; metric: MetricComparison | null; informational?: boolean }) {
+  const ok = metric ? metric.within_tolerance && metric.theoretical_in_ci : false;
   return (
     <article className="metric-card">
       <header>
@@ -48,19 +26,25 @@ function MetricCard({ title, symbol, metric, informational }: { title: string; s
       </header>
       {metric ? (
         <>
-          <MetricChart metric={metric} label={title} />
-          <div className="metric-checks">
-            <Check2 ok={metric.within_tolerance} yes="Within tolerance" no="Outside tolerance" />
-            <Check2 ok={metric.theoretical_in_ci} yes="Theory in CI" no="Theory outside CI" />
-          </div>
-          <dl className="metric-numbers">
-            <div><dt>Mean</dt><dd>{formatNumber(metric.mean)}</dd></div>
-            <div><dt>Theoretical</dt><dd>{formatNumber(metric.theoretical)}</dd></div>
-            <div><dt>95% CI</dt><dd>{formatNumber(metric.ci95_low)} – {formatNumber(metric.ci95_high)}</dd></div>
-            <div><dt>Rel. error</dt><dd>{formatPercent(metric.rel_error_pct)} <small>/ {formatPercent(metric.tolerance_pct, 0)}</small></dd></div>
-            <div><dt>Std. dev.</dt><dd>{formatNumber(metric.stddev)}</dd></div>
-            <div><dt>n</dt><dd>{metric.n}</dd></div>
-          </dl>
+          <MetricDotWhisker metric={metric} label={title} />
+          <p className={`metric-verdict check ${ok ? "check-ok" : "check-bad"}`}>
+            {ok ? <Check size={13} /> : <CircleX size={13} />}
+            <span>
+              {metric.within_tolerance ? "Within tolerance" : "Outside tolerance"}
+              {" · "}
+              {metric.theoretical_in_ci ? "theory in CI" : "theory outside CI"}
+            </span>
+          </p>
+          <details className="metric-details">
+            <summary>All numbers</summary>
+            <dl className="metric-numbers">
+              <div><dt>Mean</dt><dd>{formatNumber(metric.mean)}</dd></div>
+              <div><dt>Theoretical</dt><dd>{formatNumber(metric.theoretical)}</dd></div>
+              <div><dt>95% CI</dt><dd>{formatNumber(metric.ci95_low)} – {formatNumber(metric.ci95_high)}</dd></div>
+              <div><dt>Std. dev.</dt><dd>{formatNumber(metric.stddev)}</dd></div>
+              <div><dt>n</dt><dd>{metric.n}</dd></div>
+            </dl>
+          </details>
         </>
       ) : <p className="metric-empty">Needs at least two completed replications.</p>}
     </article>
@@ -82,7 +66,6 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
   const [record, setRecord] = useState<RunRecord | null>(null);
   const [report, setReport] = useState<RunReport | null>(null);
   const [error, setError] = useState<{ message: string; status: number | null } | null>(null);
-  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
 
   useEffect(() => {
     let active = true;
@@ -103,34 +86,24 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
     return () => { active = false; };
   }, [api, runId]);
 
-  const copyJson = async () => {
-    if (!report) return;
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
-      setCopied("copied");
-    } catch {
-      setCopied("failed");
-    }
-    window.setTimeout(() => setCopied("idle"), 2000);
-  };
-
   if (error) {
     const lost = record?.state === "coordinator_lost";
     return (
       <section className="page-content">
-        <div className="empty-state">
-          {lost ? <Unplug size={22} /> : <CircleX size={22} />}
-          <strong>{error.status === 404 ? "Run not found" : lost ? "No report: the coordinator was lost" : "Report unavailable"}</strong>
+        <EmptyState
+          icon={lost ? <Unplug size={22} /> : <CircleX size={22} />}
+          title={error.status === 404 ? "Run not found" : lost ? "No report: the coordinator was lost" : "Report unavailable"}
+        >
           <span>{error.message}</span>
           {lost
             ? <a href={`#/launch?resubmit=${encodeURIComponent(runId)}`}><RotateCcw size={14} /> Resubmit with the same base seed</a>
             : <a href={`#/live/${encodeURIComponent(runId)}`}>Open live view</a>}
-        </div>
+        </EmptyState>
       </section>
     );
   }
   if (!report) {
-    return <section className="page-content"><div className="loading-state" role="status"><span className="spinner" />Loading report</div></section>;
+    return <section className="page-content"><LoadingState>Loading report</LoadingState></section>;
   }
 
   if (isNetworkReport(report)) {
@@ -147,27 +120,39 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
   const maxPeer = Math.max(1, ...peerCounts.map(([, count]) => count));
   const totalDone = peerCounts.reduce((sum, [, count]) => sum + count, 0);
   const verdictClass = report.verdict === "PASS" ? "verdict-pass" : report.verdict === "FAIL" ? "verdict-fail" : "verdict-pending";
+  const warnings: ReactNode[] = [];
+  if (report.stale) {
+    warnings.push(<><History size={15} />Stored snapshot: the coordinator is unavailable, so this report may be out of date.</>);
+  }
+  if (report.verdict === "PENDING") {
+    warnings.push(<>The batch is still running. Statistics are provisional.</>);
+  }
+  if (n < SMALL_SAMPLE) {
+    warnings.push(<><TriangleAlert size={15} />Only {n} replications completed. The normal-approximation 95% CI is only reliable for n ≥ {SMALL_SAMPLE}.</>);
+  }
 
   return (
     <section className="page-content" aria-labelledby="report-heading">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">BATCH REPORT</p>
-          <h1 id="report-heading">Report</h1>
-          <p className="lede">{report.batch_id} · coordinated by {report.coordinator}</p>
-        </div>
-        <div className="heading-actions">
+      <ReportHeader
+        id="report-heading"
+        eyebrow="BATCH REPORT"
+        title="Report"
+        batchId={report.batch_id}
+        coordinator={report.coordinator}
+        seed={report.base_seed}
+        actions={<>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}><Activity size={15} />Live view</a>
-          <button className="ghost-button" type="button" onClick={() => void copyJson()} aria-live="polite">
-            {copied === "copied" ? <Check size={15} /> : <Copy size={15} />}
-            {copied === "copied" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy as JSON"}
-          </button>
-        </div>
-      </div>
+          <CopyJsonButton value={report} label="Copy as JSON" />
+        </>}
+      />
 
-      {report.stale && <div className="notice notice-warning stale-notice" role="status"><History size={15} />Stored snapshot: the coordinator is unavailable, so this report may be out of date.</div>}
-      {report.verdict === "PENDING" && <div className="notice notice-warning" role="status">The batch is still running. Statistics are provisional.</div>}
-      {n < SMALL_SAMPLE && <div className="notice notice-warning" role="status"><TriangleAlert size={15} /> Only {n} replications completed. The normal-approximation 95% CI is only reliable for n ≥ {SMALL_SAMPLE}.</div>}
+      {warnings.length > 0 && (
+        <Notice kind="warning" className="notice-list-notice">
+          <ul className="notice-list">
+            {warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+          </ul>
+        </Notice>
+      )}
 
       <div className={`verdict-card ${verdictClass}`}>
         <div className="verdict-mark">{report.verdict === "PASS" ? <CircleCheck size={30} /> : report.verdict === "FAIL" ? <CircleX size={30} /> : <Activity size={30} />}</div>
@@ -178,7 +163,7 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
         </div>
       </div>
 
-      <div className="section-title"><h2>Metrics vs M/M/1 theory</h2><span>Dot: mean · whisker: 95% CI · dashed line: theory · band: tolerance</span></div>
+      <SectionTitle title="Metrics vs M/M/1 theory" note="Dot: mean · whisker: 95% CI · dashed line: theory · band: tolerance" />
       <div className="metric-grid">
         <MetricCard title="Mean time in system" symbol="W" metric={report.mean_wait_time} />
         <MetricCard title="Mean number in system" symbol="L" metric={report.mean_queue_length} />
@@ -187,7 +172,7 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
 
       <div className="report-columns">
         <div className="panel">
-          <div className="panel-title"><h2>Tasks per node</h2><span>Completed results</span></div>
+          <PanelTitle title="Tasks per node" note="Completed results" />
           {peerCounts.length === 0 ? <p className="metric-empty">No completed results yet.</p> : (
             <ul className="peer-bars">
               {peerCounts.map(([peer, count]) => (
@@ -203,7 +188,7 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
         </div>
 
         <div className="panel">
-          <div className="panel-title"><h2>Timing</h2><span>Distributed vs serial</span></div>
+          <PanelTitle title="Timing" note="Distributed vs serial" />
           <div className="speedup"><span>Speedup</span><strong>{formatSpeedup(report.timing.speedup)}</strong></div>
           <dl className="timing-list">
             <div><dt>Distributed wall clock</dt><dd>{formatDuration(report.timing.distributed_wall_clock_seconds)}</dd></div>
@@ -216,7 +201,7 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
 
       {report.failed_tasks.length > 0 && (
         <>
-          <div className="section-title"><h2>Permanently failed tasks</h2><span>{report.failed_tasks.length}</span></div>
+          <SectionTitle title="Permanently failed tasks" note={report.failed_tasks.length} />
           <div className="matrix-frame">
             <table className="data-table">
               <thead><tr><th scope="col">Task</th><th scope="col">Seed</th><th scope="col">Attempts</th><th scope="col">Last error</th></tr></thead>
@@ -226,19 +211,33 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
         </>
       )}
 
-      <div className="section-title"><h2>Parameters</h2></div>
-      <dl className="meta-strip params-strip">
-        <div><dt>λ</dt><dd>{report.params.lambda}</dd></div>
-        <div><dt>μ</dt><dd>{report.params.mu}</dd></div>
-        <div><dt>ρ</dt><dd>{formatNumber(report.theoretical.rho, 3)}</dd></div>
-        <div><dt>Simulation time</dt><dd>{report.params.sim_time}</dd></div>
-        <div><dt>Warmup</dt><dd>{report.params.warmup_time}</dd></div>
-        <div><dt>Replications</dt><dd>{report.replications_requested}</dd></div>
-        <div><dt>Base seed</dt><dd>{report.base_seed}</dd></div>
-        <div><dt>Tolerance</dt><dd>{formatPercent(report.tolerance_pct, 0)}</dd></div>
-        <div className="meta-wide"><dt>Seed scheme</dt><dd>{report.seed_scheme}</dd></div>
-        <div className="meta-wide"><dt>CI method</dt><dd>{report.ci_method}</dd></div>
-      </dl>
+      <SectionTitle title="Parameters" />
+      <p className="params-summary">{describeQueueLoad(report.params.lambda, report.params.mu, report.theoretical.rho)}</p>
+      <StatStrip
+        variant="meta"
+        className="params-strip"
+        items={[
+          { label: "Simulation time", value: report.params.sim_time },
+          { label: "Warmup", value: report.params.warmup_time },
+          { label: "Replications", value: report.replications_requested },
+          { label: "Base seed", value: report.base_seed },
+          { label: "Tolerance", value: formatPercent(report.tolerance_pct, 0) },
+        ]}
+      />
+      <details className="params-details">
+        <summary>Raw parameters</summary>
+        <StatStrip
+          variant="meta"
+          className="params-strip"
+          items={[
+            { label: "λ (arrival rate)", value: report.params.lambda },
+            { label: "μ (service rate)", value: report.params.mu },
+            { label: "ρ (utilisation)", value: formatNumber(report.theoretical.rho, 3) },
+            { label: "CI method", value: report.ci_method, wide: true },
+            { label: "Seed scheme", value: report.seed_scheme, wide: true },
+          ]}
+        />
+      </details>
     </section>
   );
 }

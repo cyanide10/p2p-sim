@@ -12,6 +12,15 @@ export function partitionClassForNode(nodeId: string, assignment: Record<string,
   return Number.isInteger(part) && part >= 0 ? `partition-${part % 6}` : "";
 }
 
+/** Compute and barrier-wait bar widths as percentages of the widest partition. */
+export function partitionBarWidths(compute: number, wait: number, maxTotal: number): { compute: number; wait: number } {
+  const scale = maxTotal > 0 ? maxTotal : 1;
+  return {
+    compute: (Math.max(0, compute) / scale) * 100,
+    wait: (Math.max(0, wait) / scale) * 100,
+  };
+}
+
 export function partitionBreakdown(partitions: Record<string, PartitionTiming>): PartitionBreakdown {
   const rows = Object.entries(partitions)
     .map(([id, timing]) => ({

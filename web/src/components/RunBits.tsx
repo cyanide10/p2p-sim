@@ -1,4 +1,5 @@
 import { CircleCheck, CircleHelp, CircleX, LoaderCircle, Unplug } from "lucide-react";
+import type { ReactNode } from "react";
 import type { RunState, TaskCounts, TaskDetail } from "../api/types";
 
 const stateLabels: Record<RunState, string> = {
@@ -9,8 +10,28 @@ const stateLabels: Record<RunState, string> = {
   unknown: "Unknown",
 };
 
-export function StateBadge({ state }: { state: RunState }) {
-  const icon = state === "running"
+export type BadgeTone = "active" | "good" | "warn" | "bad" | "neutral";
+
+const toneState: Record<BadgeTone, string> = {
+  active: "running",
+  good: "complete",
+  warn: "warn",
+  bad: "failed",
+  neutral: "unknown",
+};
+
+/**
+ * Shared status pill. Pass a RunState for run semantics and icon, or a label
+ * plus tone for page-local transport states (worker/PDES streams, player).
+ */
+export function StateBadge({ state, label, tone = "neutral", busy, className }: {
+  state?: RunState;
+  label?: string;
+  tone?: BadgeTone;
+  busy?: boolean;
+  className?: string;
+}) {
+  const icon = state === "running" || busy
     ? <LoaderCircle size={14} className="button-spin" />
     : state === "complete"
       ? <CircleCheck size={14} />
@@ -18,23 +39,48 @@ export function StateBadge({ state }: { state: RunState }) {
         ? <Unplug size={14} />
         : state === "failed"
           ? <CircleX size={14} />
-          : <CircleHelp size={14} />;
-  return <span className={`state-badge state-${state}`}>{icon}{stateLabels[state]}</span>;
+          : state === "unknown"
+            ? <CircleHelp size={14} />
+            : null;
+  const toneClass = state ? `state-${state}` : `state-${toneState[tone]}`;
+  return (
+    <span className={`state-badge ${toneClass}${className ? ` ${className}` : ""}`}>
+      {icon}{label ?? (state ? stateLabels[state] : "")}
+    </span>
+  );
 }
 
-export function ProgressBar({ counts, total, label }: { counts: TaskCounts; total: number; label: string }) {
+/**
+ * Progress bar with counts inline. Batch runs pass task `counts` (complete,
+ * in-flight and failed segments); window-based PDES/attack runs pass a single
+ * `done` count for the current coordination window.
+ */
+export function ProgressBar({ counts, total, label, done: doneCount, detail, percentageDigits = 0 }: {
+  counts?: TaskCounts;
+  total: number;
+  label: string;
+  done?: number;
+  detail?: ReactNode;
+  percentageDigits?: number;
+}) {
+  const complete = doneCount ?? counts?.complete ?? 0;
   const pct = (value: number) => (total > 0 ? (value / total) * 100 : 0);
-  const done = pct(counts.complete);
+  const done = pct(complete);
   return (
     <div className="progress-block">
       <div className="progress-head">
         <span>{label}</span>
-        <strong>{counts.complete.toLocaleString()} / {total.toLocaleString()}<small> · {done.toFixed(0)}%</small></strong>
+        <strong>
+          {complete.toLocaleString()} / {total.toLocaleString()}<small> · {done.toFixed(percentageDigits)}%</small>
+          {detail !== undefined && <small> · {detail}</small>}
+        </strong>
       </div>
-      <div className="progress-track" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={total} aria-valuenow={counts.complete}>
+      <div className="progress-track" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={total} aria-valuenow={complete}>
         <span className="progress-complete" style={{ width: `${done}%` }} />
-        <span className="progress-assigned" style={{ width: `${pct(counts.assigned)}%` }} />
-        <span className="progress-failed" style={{ width: `${pct(counts.failed)}%` }} />
+        {counts && <>
+          <span className="progress-assigned" style={{ width: `${pct(counts.assigned)}%` }} />
+          <span className="progress-failed" style={{ width: `${pct(counts.failed)}%` }} />
+        </>}
       </div>
     </div>
   );
@@ -53,7 +99,8 @@ export function TaskGrid({
   peers: string[];
   mock: boolean;
 }) {
-  if (!enabled || !tasks) {
+  if (!enabled) return null;
+  if (!tasks) {
     return (
       <div className="grid-placeholder">
         <CircleHelp size={18} />

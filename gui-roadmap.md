@@ -2,6 +2,8 @@
 
 End-to-end roadmap for adding a dockerized web GUI to p2p-sim. This document covers the whole journey, from setting up a Windows machine to a hardened, containerized release. The detailed task list for Phases 2 and 3 lives in `gui-stage1-2-plan.md`; this file is the map around it.
 
+The GUI declutter and enhancement pass landed in [the UI declutter plan](./docs/superpowers/plans/2026-11-04-ui-declutter.md).
+
 Effort figures are rough estimates for one developer working with an AI coding agent. Treat them as relative sizes, not commitments.
 
 ---

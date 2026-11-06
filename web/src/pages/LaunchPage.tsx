@@ -2,28 +2,64 @@ import { ArrowRight, Dices, LoaderCircle, Play, RotateCcw, Server, TriangleAlert
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, createApiClient } from "../api/client";
 import type { GatewayConfig, MockScenario, Peer, RunCreated, RunParameters, RunRecord } from "../api/types";
+import { LoadingState, Notice, PageHeading } from "../components/PagePrimitives";
 import { startRun } from "../lib/resubmit";
 import { randomSeed, validateRun, type RunField } from "../lib/validation";
 
 type NumericField = Exclude<keyof RunParameters, "serial_baseline" | "baseline" | "parts" | "kind" | "scenario">;
 type Draft = Record<NumericField, string> & { serial_baseline: boolean };
-
-const fieldConfig: Array<{
+type NumericFieldConfig = {
   name: NumericField;
   label: string;
   description: string;
   min?: number;
   max?: number;
   step: string;
-}> = [
-  { name: "replications", label: "Replications", description: "Independent seeded trials", min: 2, max: 100000, step: "1" },
-  { name: "lambda", label: "Arrival rate (λ)", description: "Arrivals per simulation time unit", min: 0, step: "any" },
-  { name: "mu", label: "Service rate (μ)", description: "Services per simulation time unit", min: 0, step: "any" },
-  { name: "sim_time", label: "Simulation time", description: "Total simulated time per trial", min: 0, step: "any" },
-  { name: "warmup_time", label: "Warmup time", description: "Discarded before measurement", min: 0, step: "any" },
-  { name: "tolerance_pct", label: "Theory tolerance (%)", description: "Maximum relative error for PASS", min: 0, step: "any" },
-  { name: "base_seed", label: "Base seed", description: "Reproduce this run with the same seed", min: 0, step: "1" },
-];
+};
+
+const fieldsBySection: Record<"queue" | "sampling" | "advanced", NumericFieldConfig[]> = {
+  queue: [
+    { name: "lambda", label: "Arrival rate (λ)", description: "Requests arriving per simulation time unit", min: 0, step: "any" },
+    { name: "mu", label: "Service rate (μ)", description: "Requests served per simulation time unit", min: 0, step: "any" },
+    { name: "sim_time", label: "Simulation time", description: "Total simulated time per trial", min: 0, step: "any" },
+    { name: "warmup_time", label: "Warmup time", description: "Discarded before measurement", min: 0, step: "any" },
+  ],
+  sampling: [
+    { name: "replications", label: "Replications", description: "Independent seeded trials", min: 2, max: 100000, step: "1" },
+  ],
+  advanced: [
+    { name: "tolerance_pct", label: "Theory tolerance (%)", description: "Maximum relative error for PASS", min: 0, step: "any" },
+  ],
+};
+
+function NumberField({
+  field, value, error, onChange,
+}: {
+  field: NumericFieldConfig;
+  value: string;
+  error?: string;
+  onChange: (name: NumericField, value: string) => void;
+}) {
+  const id = field.name;
+  return (
+    <label className="number-field" htmlFor={id}>
+      <span className="field-label">{field.label}</span>
+      <input
+        id={id}
+        type="number"
+        inputMode={field.name === "replications" ? "numeric" : "decimal"}
+        min={field.min}
+        max={field.max}
+        step={field.step}
+        value={value}
+        aria-invalid={Boolean(error)}
+        aria-describedby={error ? `${id}-error` : `${id}-help`}
+        onChange={(event) => onChange(field.name, event.target.value)}
+      />
+      <span className="field-help" id={error ? `${id}-error` : `${id}-help`}>{error ?? field.description}</span>
+    </label>
+  );
+}
 
 function toDraft(params: RunParameters): Draft {
   return {
@@ -144,10 +180,10 @@ export function LaunchPage({
   };
 
   if (loadError) {
-    return <section className="page-content"><div className="notice notice-error" role="alert">{loadError}</div><a href="#/cluster">Return to Cluster</a></section>;
+    return <section className="page-content"><Notice kind="error">{loadError}</Notice><a href="#/cluster">Return to Cluster</a></section>;
   }
   if (!config || !draft || !params || !validation) {
-    return <section className="page-content"><div className="loading-state" role="status"><span className="spinner" />Loading run settings</div></section>;
+    return <section className="page-content"><LoadingState>Loading run settings</LoadingState></section>;
   }
 
   const theoretical = validation.theoretical;
@@ -169,20 +205,19 @@ export function LaunchPage({
   );
   return (
     <section className="page-content launch-content" aria-labelledby="launch-heading">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">NEW SIMULATION</p>
-          <h1 id="launch-heading">Launch run</h1>
-          <p className="lede">Configure an independent replication batch and choose its coordinating node.</p>
-        </div>
-      </div>
+      <PageHeading
+        id="launch-heading"
+        eyebrow="NEW SIMULATION"
+        title="Launch run"
+        lede="Configure an independent replication batch and choose its coordinating node."
+      />
 
       {resubmitOf && (
-        <div className="notice notice-info" role="status">
+        <Notice kind="info">
           <RotateCcw size={15} /> Resubmitting {recorded ? "the recorded " : ""}batch {resubmitOf.batch_id} from {resubmitOf.coordinator} with the same {recorded ? "scenario" : "parameters"} and base seed {resubmitOf.params.base_seed}. The same seed reproduces the same statistics.
-        </div>
+        </Notice>
       )}
-      {submitError && <div className={`notice ${busyConflict ? "notice-warning" : "notice-error"}`} role="alert">{submitError}</div>}
+      {submitError && <Notice kind={busyConflict ? "warning" : "error"}>{submitError}</Notice>}
       {busyConflict && alternatePeer && (
         <div className="retry-strip">
           <span><TriangleAlert size={17} /> {alternatePeer.id} is healthy and available.</span>
@@ -199,7 +234,6 @@ export function LaunchPage({
               ? <div className="aside-detail"><span>Parts</span><strong>{recorded.parts ?? "--"}</strong></div>
               : <div className="aside-detail"><span>Replications</span><strong>{recorded.replications}</strong></div>}
             <div className="aside-detail"><span>Base seed</span><strong>{recorded.base_seed}</strong></div>
-            <div className="aside-detail"><span>Coordinator</span><strong>{coordinator || "--"}</strong></div>
             {submitButton(false)}
           </aside>
         </form>
@@ -211,46 +245,55 @@ export function LaunchPage({
           <section className="form-section">
             <div className="form-section-heading"><span className="section-index">02</span><div><h2>Queue model</h2><p>M/M/1 input rates and simulation horizon.</p></div></div>
             <div className="form-grid">
-              {fieldConfig.filter((field) => field.name !== "replications" && field.name !== "tolerance_pct" && field.name !== "base_seed").map((field) => {
-                const error = validation.errors[field.name as RunField];
-                return <label className="number-field" key={field.name} htmlFor={field.name}>
-                  <span className="field-label">{field.label}</span>
-                  <input id={field.name} type="number" inputMode="decimal" min={field.min} step={field.step} value={draft[field.name]} aria-invalid={Boolean(error)} aria-describedby={error ? `${field.name}-error` : `${field.name}-help`} onChange={(event) => setNumber(field.name, event.target.value)} />
-                  <span className="field-help" id={error ? `${field.name}-error` : `${field.name}-help`}>{error ?? field.description}</span>
-                </label>;
-              })}
+              {fieldsBySection.queue.map((field) => <NumberField
+                key={field.name}
+                field={field}
+                value={draft[field.name]}
+                error={validation.errors[field.name as RunField]}
+                onChange={setNumber}
+              />)}
             </div>
           </section>
 
           <section className="form-section">
-            <div className="form-section-heading"><span className="section-index">03</span><div><h2>Sampling</h2><p>Set replication count, tolerance, and reproducibility.</p></div></div>
+            <div className="form-section-heading"><span className="section-index">03</span><div><h2>Sampling</h2><p>Choose how many independent trials to run.</p></div></div>
             <div className="form-grid">
-              {fieldConfig.filter((field) => field.name === "replications" || field.name === "tolerance_pct").map((field) => {
-                const error = validation.errors[field.name];
-                return <label className="number-field" key={field.name} htmlFor={field.name}>
-                  <span className="field-label">{field.label}</span>
-                  <input id={field.name} type="number" inputMode="numeric" min={field.min} max={field.max} step={field.step} value={draft[field.name]} aria-invalid={Boolean(error)} aria-describedby={error ? `${field.name}-error` : `${field.name}-help`} onChange={(event) => setNumber(field.name, event.target.value)} />
-                  <span className="field-help" id={error ? `${field.name}-error` : `${field.name}-help`}>{error ?? field.description}</span>
-                </label>;
-              })}
+              {fieldsBySection.sampling.map((field) => <NumberField
+                key={field.name}
+                field={field}
+                value={draft[field.name]}
+                error={validation.errors[field.name as RunField]}
+                onChange={setNumber}
+              />)}
+            </div>
+            {validation.warnings.map((warning) => <div className="inline-warning" key={warning}><TriangleAlert size={15} />{warning}</div>)}
+          </section>
+
+          <details className="launch-advanced">
+            <summary>Advanced options <span>Tolerance, seed, and serial comparison</span></summary>
+            <div className="launch-advanced-grid">
+              {fieldsBySection.advanced.map((field) => <NumberField
+                key={field.name}
+                field={field}
+                value={draft[field.name]}
+                error={validation.errors[field.name as RunField]}
+                onChange={setNumber}
+              />)}
               <label className="number-field seed-field" htmlFor="base_seed">
                 <span className="field-label">Base seed</span>
                 <div className="seed-input"><input id="base_seed" type="number" inputMode="numeric" min={0} step={1} value={draft.base_seed} aria-invalid={Boolean(validation.errors.base_seed)} aria-describedby={validation.errors.base_seed ? "base_seed-error" : "base_seed-help"} onChange={(event) => setNumber("base_seed", event.target.value)} /><button type="button" className="seed-button" title="Generate a random seed" aria-label="Generate a random seed" onClick={() => setNumber("base_seed", String(randomSeed(params.replications)))}><Dices size={16} /></button></div>
                 <span className="field-help" id={validation.errors.base_seed ? "base_seed-error" : "base_seed-help"}>{validation.errors.base_seed ?? "Same seed and parameters reproduce this batch."}</span>
               </label>
             </div>
-            {validation.warnings.map((warning) => <div className="inline-warning" key={warning}><TriangleAlert size={15} />{warning}</div>)}
             <label className="toggle-row"><input type="checkbox" checked={draft.serial_baseline} onChange={(event) => setDraft({ ...draft, serial_baseline: event.target.checked })} /><span className="toggle-copy"><strong>Run serial baseline</strong><small>Repeat the same seeds on the coordinator to measure speedup.</small></span></label>
-          </section>
+          </details>
         </div>
 
         <aside className="run-aside" aria-label="Run summary">
           <p className="aside-label">QUEUE SNAPSHOT</p>
-          <div className="rho-value"><span>Utilization ρ</span><strong className={validation.rho !== null && validation.rho >= 1 ? "rho-unstable" : ""}>{validation.rho === null ? "--" : validation.rho.toFixed(3)}</strong></div>
+          <div className="rho-value"><span>Capacity in use (ρ)</span><strong className={validation.rho !== null && validation.rho >= 1 ? "rho-unstable" : ""}>{validation.rho === null ? "--" : validation.rho.toFixed(3)}</strong></div>
           {theoretical ? <div className="theory-values"><div><span>Expected time in system · W</span><strong>{theoretical.W.toFixed(3)}</strong></div><div><span>Expected items in system · L</span><strong>{theoretical.L.toFixed(3)}</strong></div></div> : <p className="aside-note">No stable M/M/1 steady state for these rates. Submission is blocked.</p>}
           <div className="aside-divider" />
-          <div className="aside-detail"><span>Replications</span><strong>{params.replications || "--"}</strong></div>
-          <div className="aside-detail"><span>Coordinator</span><strong>{coordinator || "--"}</strong></div>
           {submitButton(Object.keys(validation.errors).length > 0)}
           <p className="submit-note">The coordinator retains live batch state. If it is lost, resubmit with the same seed.</p>
         </aside>

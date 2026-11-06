@@ -1,7 +1,11 @@
-import { Check, CircleX, Copy, Crosshair, TriangleAlert } from "lucide-react";
+import { Check, CircleX, Crosshair, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { AttackReport } from "../api/types";
 import { AttackMap } from "../components/AttackMap";
+import { CopyJsonButton } from "../components/CopyJsonButton";
+import { EmptyState, Notice, SectionTitle, StatStrip } from "../components/PagePrimitives";
+import { PartitionTimingList } from "../components/PartitionTiming";
+import { ReportHeader } from "../components/ReportHeader";
 import {
   ATTACK_SCENARIOS, attackRunFromMetrics, compact, percent,
   type AttackConfig, type AttackSample,
@@ -41,7 +45,6 @@ function impactValue(report: AttackReport): { label: string; value: string } {
 }
 
 export function AttackReportView({ report, runId }: { report: AttackReport; runId: string }) {
-  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const scenario = ATTACK_SCENARIOS[report.scenario.kind];
   const config = configFor(report);
@@ -60,82 +63,64 @@ export function AttackReportView({ report, runId }: { report: AttackReport; runI
     parts.set(part, [...(parts.get(part) ?? []), node]);
   }
 
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(JSON.stringify(report, null, 2)); setCopied("copied"); }
-    catch { setCopied("failed"); }
-    window.setTimeout(() => setCopied("idle"), 2000);
-  };
-
   return (
     <section className="page-content" aria-labelledby="attack-report-heading">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">THREAT CAMPAIGN REPORT · {scenario.codename}</p>
-          <h1 id="attack-report-heading">{scenario.label}</h1>
-          <p className="lede">{report.batch_id} · coordinated by {report.coordinator} · seed {report.base_seed}</p>
-        </div>
-        <div className="heading-actions">
+      <ReportHeader
+        id="attack-report-heading"
+        eyebrow={`THREAT CAMPAIGN REPORT · ${scenario.codename}`}
+        title={scenario.label}
+        batchId={report.batch_id}
+        coordinator={report.coordinator}
+        seed={report.base_seed}
+        actions={<>
           <a className="ghost-button" href="#/attack"><Crosshair size={15} />Threat lab</a>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}>Progress</a>
-          <button className="ghost-button" type="button" onClick={() => void copy()}>
-            <Copy size={15} />{copied === "copied" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy JSON"}
-          </button>
-        </div>
-      </div>
+          <CopyJsonButton value={report} />
+        </>}
+      />
 
-      {report.stale && <div className="notice notice-warning" role="status">Stored snapshot: the coordinator is unavailable.</div>}
+      {report.stale && <Notice kind="warning">Stored snapshot: the coordinator is unavailable.</Notice>}
       {report.state === "failed" && (
-        <div className="notice notice-error" role="alert">
+        <Notice kind="error">
           <CircleX size={18} />
           <span><strong>Campaign failed{report.failed_node ? ` on ${report.failed_node}` : ""}.</strong> {report.error ?? "The coordinator reported a partition failure."}</span>
-        </div>
+        </Notice>
       )}
       {report.results_identical === true && (
         <div className="serial-match serial-ok"><Check size={18} /><span>Serial and partitioned campaign samples are identical, seed for seed.</span></div>
       )}
       {report.results_identical === false && (
-        <div className="notice notice-error" role="alert">
+        <Notice kind="error">
           <TriangleAlert size={18} />
           <span><strong>Serial and partitioned campaigns differ.</strong> First differing sample: <code>{report.first_difference ?? "unknown"}</code></span>
-        </div>
+        </Notice>
       )}
 
-      <div className="pdes-summary-grid">
-        <article><span>Peak threat</span><strong>{summary ? `${summary.peakThreat.toFixed(0)} / 100` : "--"}</strong></article>
-        <article><span>Peak load ratio</span><strong>{summary ? `${summary.peakLoadRatio.toFixed(2)}×` : "--"}</strong></article>
-        <article><span>{impact.label}</span><strong>{impact.value}</strong></article>
-        <article><span>Time above capacity</span><strong>{summary ? formatDuration(summary.timeAboveCapacity) : "--"}</strong></article>
-        <article><span>Recovery</span><strong>{summary ? (summary.recoverySeconds === null ? "Not reached" : formatDuration(summary.recoverySeconds)) : "--"}</strong></article>
-        <article><span>Mitigation</span><strong>{summary ? percent(summary.blockedPct) : "--"}</strong></article>
-      </div>
+      <StatStrip variant="pdes" items={[
+        { label: "Peak threat", value: summary ? `${summary.peakThreat.toFixed(0)} / 100` : "--" },
+        { label: "Peak load ratio", value: summary ? `${summary.peakLoadRatio.toFixed(2)}×` : "--" },
+        { label: impact.label, value: impact.value },
+        { label: "Time above capacity", value: summary ? formatDuration(summary.timeAboveCapacity) : "--" },
+        { label: "Recovery", value: summary ? (summary.recoverySeconds === null ? "Not reached" : formatDuration(summary.recoverySeconds)) : "--" },
+        { label: "Mitigation", value: summary ? percent(summary.blockedPct) : "--" },
+      ]} />
 
-      <div className="section-title"><h2>Execution</h2><span>{report.plan.parts === 1 ? "single worker" : `${report.plan.parts} partitions in lock-step`}</span></div>
-      <div className="pdes-summary-grid">
-        <article><span>Partitioned wall time</span><strong>{formatDuration(report.partitioned_wall_seconds)}</strong></article>
-        <article><span>Serial baseline</span><strong>{report.baseline_wall_seconds === undefined ? "Not run" : formatDuration(report.baseline_wall_seconds)}</strong></article>
-        <article><span>Speedup</span><strong>{report.speedup === undefined ? "--" : formatSpeedup(report.speedup)}</strong></article>
-        <article><span>Lookahead / windows</span><strong>{report.plan.lookahead.toPrecision(4)} s · {report.plan.windows.toLocaleString()}</strong></article>
-        <article><span>Campaign scale</span><strong>{compact(report.scenario.scale, 1)}</strong></article>
-        <article><span>Defensive posture</span><strong>{report.scenario.defense}%</strong></article>
-      </div>
+      <details className="attack-report-execution">
+        <summary>Execution details · {report.plan.parts === 1 ? "single worker" : `${report.plan.parts} partitions in lock-step`}</summary>
+        <StatStrip variant="pdes" items={[
+          { label: "Partitioned wall time", value: formatDuration(report.partitioned_wall_seconds) },
+          { label: "Serial baseline", value: report.baseline_wall_seconds === undefined ? "Not run" : formatDuration(report.baseline_wall_seconds) },
+          { label: "Speedup", value: report.speedup === undefined ? "--" : formatSpeedup(report.speedup) },
+          { label: "Lookahead / windows", value: <>{report.plan.lookahead.toPrecision(4)} s · {report.plan.windows.toLocaleString()}</> },
+          { label: "Campaign scale", value: compact(report.scenario.scale, 1) },
+          { label: "Defensive posture", value: <>{report.scenario.defense}%</> },
+        ]} />
+      </details>
 
-      <div className="section-title"><h2>Partition timing breakdown</h2><span>sum compute / barrier wait: {breakdown.totalCompute.toFixed(2)} s / {breakdown.totalWait.toFixed(2)} s</span></div>
-      <div className="partition-timing-list">
-        {breakdown.rows.map((row, index) => {
-          const scale = breakdown.maxTotal || 1;
-          return <div className="partition-timing-row" key={row.id}>
-            <strong>{row.id}</strong>
-            <div className="partition-time-track" aria-label={`${row.id}: ${row.compute.toFixed(3)} seconds compute, ${row.wait.toFixed(3)} seconds wait`}>
-              <span className={`partition-time-compute peer-${index % 6}`} style={{ width: `${(row.compute / scale) * 100}%` }} />
-              <span className="partition-time-wait" style={{ width: `${(row.wait / scale) * 100}%` }} />
-            </div>
-            <span>{row.compute.toFixed(2)}s / {row.wait.toFixed(2)}s · {row.messages.toLocaleString()} msgs · {(row.bytes / 1024).toFixed(1)} KiB</span>
-          </div>;
-        })}
-        {!breakdown.rows.length && <p className="muted">Partition timing will appear after the first coordination window.</p>}
-      </div>
+      <SectionTitle title="Partition timing breakdown" note={`sum compute / barrier wait: ${breakdown.totalCompute.toFixed(2)} s / ${breakdown.totalWait.toFixed(2)} s`} />
+      <PartitionTimingList breakdown={breakdown} messagesDetail />
 
-      <div className="section-title"><h2>Topology placement</h2><span>{report.scenario.nodes.length} tokens · {report.plan.cut_links.length} cut links</span></div>
+      <SectionTitle title="Topology placement" note={`${report.scenario.nodes.length} tokens · ${report.plan.cut_links.length} cut links`} />
       <div className="attack-report-parts">
         {[...parts.entries()].sort(([a], [b]) => a - b).map(([part, nodes]) => (
           <div key={part}>
@@ -148,7 +133,7 @@ export function AttackReportView({ report, runId }: { report: AttackReport; runI
 
       {run && peak && (
         <>
-          <div className="section-title"><h2>Peak campaign snapshot</h2><span>t+{peak.t.toFixed(1)}s · {peak.phase} · threat {peak.threat.toFixed(0)}</span></div>
+          <SectionTitle title="Peak campaign snapshot" note={`t+${peak.t.toFixed(1)}s · ${peak.phase} · threat ${peak.threat.toFixed(0)}`} />
           <div className="attack-report-map">
             <AttackMap run={run} sample={peak} clock={peak.t} selectedId={selectedId} onSelect={setSelectedId} />
           </div>
@@ -160,7 +145,7 @@ export function AttackReportView({ report, runId }: { report: AttackReport; runI
           Merged {report.metrics.samples.length.toLocaleString()} campaign samples over {formatDuration(report.metrics.duration)}.
         </p>
       ) : (
-        <div className="empty-state"><Crosshair size={20} /><strong>Metrics are not available</strong><span>The run failed before the partitions could merge their samples.</span></div>
+        <EmptyState icon={<Crosshair size={20} />} title="Metrics are not available"><span>The run failed before the partitions could merge their samples.</span></EmptyState>
       )}
     </section>
   );

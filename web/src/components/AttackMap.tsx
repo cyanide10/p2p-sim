@@ -1,3 +1,4 @@
+import { useId, type KeyboardEvent } from "react";
 import type { AttackKind, AttackNode, AttackPath, AttackRun, AttackSample, NodeState } from "../lib/attack";
 import { MAP_CENTER, VIEW_H, VIEW_W } from "../lib/attack";
 
@@ -128,6 +129,11 @@ function hexPath(size: number): string {
 }
 
 export function AttackMap({ run, sample, clock, selectedId, onSelect }: Props) {
+  const uid = useId().replace(/:/g, "");
+  const bgId = `${uid}-attack-bg`;
+  const gridId = `${uid}-attack-grid`;
+  const glowId = `${uid}-attack-target-glow`;
+  const softGlowId = `${uid}-attack-soft-glow`;
   const { topology, config, scenario, paths } = run;
   const positions = new Map(topology.nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
   const accent = scenario.accent;
@@ -138,32 +144,32 @@ export function AttackMap({ run, sample, clock, selectedId, onSelect }: Props) {
     : `${visibleNodes.filter((node) => node.role === "endpoint").length} workstation subnets · ${config.scale.toLocaleString()} exposed hosts`;
 
   return (
-    <svg className="attack-map" viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} role="img"
-      aria-label={`Network attack map for ${scenario.label}: ${config.scale.toLocaleString()} scale, target ${sample.targetState}`}
+    <svg className="attack-map" viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} role="group"
+      aria-label={`Interactive network attack map for ${scenario.label}: ${config.scale.toLocaleString()} scale, target ${sample.targetState}. Focus a node and press Enter or Space to inspect it.`}
       onPointerDown={() => onSelect(null)}>
       <defs>
-        <radialGradient id="attack-bg" cx="50%" cy="47%" r="72%">
+        <radialGradient id={bgId} cx="50%" cy="47%" r="72%">
           <stop offset="0%" stopColor="#0c211a" />
           <stop offset="58%" stopColor="#081610" />
           <stop offset="100%" stopColor="#040c09" />
         </radialGradient>
-        <pattern id="attack-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+        <pattern id={gridId} width="40" height="40" patternUnits="userSpaceOnUse">
           <path d="M 40 0 L 0 0 0 40" fill="none" stroke={COLORS.grid} strokeWidth="1" />
         </pattern>
-        <radialGradient id="attack-target-glow">
+        <radialGradient id={glowId}>
           <stop offset="0%" stopColor={sample.targetState === "secure" ? COLORS.secure : accent} stopOpacity="0.28" />
           <stop offset="100%" stopColor={accent} stopOpacity="0" />
         </radialGradient>
-        <filter id="attack-soft-glow" x="-60%" y="-60%" width="220%" height="220%">
+        <filter id={softGlowId} x="-60%" y="-60%" width="220%" height="220%">
           <feGaussianBlur stdDeviation="4" result="blur" />
           <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
       </defs>
 
-      <rect width={VIEW_W} height={VIEW_H} fill="url(#attack-bg)" />
-      <rect width={VIEW_W} height={VIEW_H} fill="url(#attack-grid)" opacity="0.55" />
+      <rect width={VIEW_W} height={VIEW_H} fill={`url(#${bgId})`} />
+      <rect width={VIEW_W} height={VIEW_H} fill={`url(#${gridId})`} opacity="0.55" />
 
-      <circle cx={MAP_CENTER.x} cy={MAP_CENTER.y} r="330" fill="url(#attack-target-glow)" opacity={0.4 + sample.threat / 180} />
+      <circle cx={MAP_CENTER.x} cy={MAP_CENTER.y} r="330" fill={`url(#${glowId})`} opacity={0.4 + sample.threat / 180} />
       <circle cx={MAP_CENTER.x} cy={MAP_CENTER.y} r="112" fill="none" stroke={COLORS.ring} strokeDasharray="3 8" />
       <circle cx={MAP_CENTER.x} cy={MAP_CENTER.y} r="212" fill="none" stroke={COLORS.ring} strokeDasharray="3 8" />
       <circle cx={MAP_CENTER.x} cy={MAP_CENTER.y} r="322" fill="none" stroke={COLORS.ring} strokeDasharray="3 8" />
@@ -198,7 +204,7 @@ export function AttackMap({ run, sample, clock, selectedId, onSelect }: Props) {
             <path className="attack-vector-line" d={d} fill="none" stroke={accent} strokeWidth={0.8 + strength * 2.2}
               opacity={0.22 + strength * 0.6} strokeDasharray={config.kind === "exfil" ? "2 9" : "7 9"} strokeLinecap="round" />
             {particle && strength > 0.18 && (
-              <circle cx={particle.x} cy={particle.y} r={1.8 + strength * 2.2} fill={accent} opacity={0.55 + strength * 0.4} filter="url(#attack-soft-glow)" />
+              <circle cx={particle.x} cy={particle.y} r={1.8 + strength * 2.2} fill={accent} opacity={0.55 + strength * 0.4} filter={`url(#${softGlowId})`} />
             )}
           </g>
         );
@@ -214,11 +220,26 @@ export function AttackMap({ run, sample, clock, selectedId, onSelect }: Props) {
         const isSelected = selectedId === node.id;
         const labelY = isTarget ? 60 : size + 15;
         const targetPulse = isTarget ? 1 + 0.05 * Math.sin(clock * 2.2) : 1;
+        const nodeLabel = `${node.label} · ${node.role} · ${node.region}`;
+        const selectOnKey = (event: KeyboardEvent<SVGGElement>) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onSelect(node.id);
+          } else if (event.key === "Escape") {
+            onSelect(null);
+          }
+        };
         return (
           <g key={node.id} className={`attack-node role-${node.role} ${compromised ? "is-compromised" : ""} ${isSelected ? "is-selected" : ""}`}
             transform={`translate(${node.x}, ${node.y})`}
+            role="button"
+            tabIndex={0}
+            aria-label={`${nodeLabel} · ${node.units.toLocaleString()} units · load ${((state?.load ?? 0) * 100).toFixed(0)}% · compromise ${Math.round((state?.compromise ?? 0) * 100)}%`}
+            aria-pressed={isSelected}
+            onFocus={() => onSelect(node.id)}
+            onKeyDown={selectOnKey}
             onPointerDown={(event) => { event.stopPropagation(); onSelect(node.id); }}>
-            <title>{`${node.label} · ${node.role} · ${node.region} · ${node.units.toLocaleString()} units · load ${((state?.load ?? 0) * 100).toFixed(0)}% · compromise ${Math.round((state?.compromise ?? 0) * 100)}%`}</title>
+            <title>{`${nodeLabel} · ${node.units.toLocaleString()} units · load ${((state?.load ?? 0) * 100).toFixed(0)}% · compromise ${Math.round((state?.compromise ?? 0) * 100)}%`}</title>
             {(isTarget || compromised || (state?.load ?? 0) > 0.9) && (
               <circle r={size + 12 + (isTarget ? 12 * targetPulse : 4)} fill={color} opacity={isTarget ? 0.09 + sample.threat / 900 : 0.08} />
             )}
@@ -279,7 +300,6 @@ export function AttackMap({ run, sample, clock, selectedId, onSelect }: Props) {
       </g>
       <text className="attack-map-count" x={VIEW_W - 28} y={34} textAnchor="end">{countLabel}</text>
       <text className="attack-map-clock" x={VIEW_W - 28} y={VIEW_H - 22} textAnchor="end">T+ {clock.toFixed(1)}s / {config.duration}s</text>
-      <text className="attack-map-axis" x={28} y={VIEW_H - 22}>GRID: {MAP_CENTER.x}/{MAP_CENTER.y} · SEED {config.seed}</text>
       <line x1={MAP_CENTER.x} y1={44} x2={MAP_CENTER.x} y2={VIEW_H - 44} stroke={COLORS.ring} strokeWidth="0.6" strokeDasharray="2 12" opacity="0.5" />
       <line x1={108} y1={MAP_CENTER.y} x2={VIEW_W - 108} y2={MAP_CENTER.y} stroke={COLORS.ring} strokeWidth="0.6" strokeDasharray="2 12" opacity="0.5" />
     </svg>
