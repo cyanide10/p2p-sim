@@ -1,7 +1,7 @@
 import { ArrowRight, RotateCcw, Unplug, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, createApiClient, type ApiClient } from "../api/client";
-import type { AttackReport, AttackStatus, GatewayConfig, MockScenario, PDESReport, RunRecord, RunState, RunStatus } from "../api/types";
+import type { AttackReport, AttackStatus, GatewayConfig, MockScenario, PDESReport, PDESStatus, RunRecord, RunState, RunStatus } from "../api/types";
 import { isAttackScenario, isNetworkScenario } from "../api/types";
 import { NetworkPlayer } from "../components/NetworkPlayer";
 import { PartitionTimingList } from "../components/PartitionTiming";
@@ -118,11 +118,8 @@ export function LivePage({ runId, scenario, mockEnabled }: { runId: string; scen
   if (!record) {
     return <section className="page-content"><LoadingState>Loading run</LoadingState></section>;
   }
-  if (record.params.kind === "pdes") {
-    return <PDESLiveView api={api} runId={runId} record={record} status={status} state={state} />;
-  }
-  if (record.params.kind === "attack") {
-    return <AttackLiveView api={api} runId={runId} record={record} status={status} state={state} />;
+  if (record.params.kind === "pdes" || record.params.kind === "attack") {
+    return <SpecializedLiveView kind={record.params.kind} api={api} runId={runId} record={record} status={status} state={state} />;
   }
 
   const legacyStatus = status && !("kind" in status) ? status : null;
@@ -210,186 +207,120 @@ export function LivePage({ runId, scenario, mockEnabled }: { runId: string; scen
   );
 }
 
-function PDESLiveView({ api, runId, record, status, state }: {
+/**
+ * Shared live view for partitioned runs. PDES network runs and attack campaigns
+ * report the same window/partition shape, so they differ only in their labels,
+ * rerun endpoint and the PDES-only topology preview.
+ */
+function SpecializedLiveView({ kind, api, runId, record, status, state }: {
+  kind: "pdes" | "attack";
   api: ApiClient;
   runId: string;
   record: RunRecord;
   status: RunStatus | null;
   state: RunState;
 }) {
-  const [report, setReport] = useState<PDESReport | null>(null);
+  const [report, setReport] = useState<PDESReport | AttackReport | null>(null);
   const [rerunning, setRerunning] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
-  const pdesStatus = status && "kind" in status && status.kind === "pdes" ? status : null;
-  const timing = partitionBreakdown(pdesStatus?.partitions ?? report?.partitions ?? {});
-  const scenario = isNetworkScenario(record.params.scenario) ? record.params.scenario : undefined;
+  const partitionedStatus: PDESStatus | AttackStatus | null =
+    status && "kind" in status && status.kind === kind ? status as PDESStatus | AttackStatus : null;
+  const timing = partitionBreakdown(partitionedStatus?.partitions ?? report?.partitions ?? {});
+  const networkScenario = isNetworkScenario(record.params.scenario) ? record.params.scenario : undefined;
+  const attackScenario = isAttackScenario(record.params.scenario) ? record.params.scenario : undefined;
+  const duration = kind === "pdes" ? networkScenario?.duration ?? 0 : attackScenario?.duration ?? 0;
+  const canRerun = kind === "pdes" ? Boolean(networkScenario) : Boolean(attackScenario);
 
   useEffect(() => {
     let active = true;
     api.getReport(runId).then((next) => {
-      if (active && "kind" in next && next.kind === "pdes") setReport(next);
+      if (!active || !("kind" in next) || next.kind !== kind) return;
+      if (next.kind === "pdes" || next.kind === "attack") setReport(next);
     }).catch(() => undefined);
     return () => { active = false; };
-  }, [api, runId]);
+  }, [api, runId, kind]);
 
   const rerun = async () => {
-    if (!scenario) return;
     setRerunning(true);
     setRerunError(null);
     try {
       const cluster = await api.getCluster();
-      const excludedNode = pdesStatus?.failed_node ?? (state === "coordinator_lost" ? record.coordinator : undefined);
+      const excludedNode = partitionedStatus?.failed_node ?? (state === "coordinator_lost" ? record.coordinator : undefined);
       const survivors = cluster.nodes.filter((node) => node.healthy && node.id !== excludedNode);
-      const routerCount = scenario.nodes.filter((node) => node.kind === "router").length;
-      const parts = Math.min(survivors.length, routerCount);
-      if (parts < 1 || survivors.length < 1) throw new Error("No surviving nodes are available to rerun this scenario.");
-      const created = await api.createPDESRun(
-        survivors[0].id, scenario, parts, record.params.base_seed, record.params.baseline ?? true,
-      );
-      window.location.hash = `#/live/${encodeURIComponent(created.run_id)}`;
+      if (kind === "pdes") {
+        if (!networkScenario) return;
+        const routerCount = networkScenario.nodes.filter((node) => node.kind === "router").length;
+        const parts = Math.min(survivors.length, routerCount);
+        if (parts < 1 || survivors.length < 1) throw new Error("No surviving nodes are available to rerun this scenario.");
+        const created = await api.createPDESRun(
+          survivors[0].id, networkScenario, parts, record.params.base_seed, record.params.baseline ?? true,
+        );
+        window.location.hash = `#/live/${encodeURIComponent(created.run_id)}`;
+      } else {
+        if (!attackScenario) return;
+        const parts = Math.min(survivors.length, attackScenario.nodes.length);
+        if (parts < 1 || survivors.length < 1) throw new Error("No surviving nodes are available to rerun this campaign.");
+        const created = await api.createAttackRun(
+          survivors[0].id, attackScenario, parts, record.params.base_seed, record.params.baseline ?? true,
+        );
+        window.location.hash = `#/live/${encodeURIComponent(created.run_id)}`;
+      }
     } catch (cause) {
-      setRerunError(cause instanceof Error ? cause.message : "Could not rerun on surviving nodes.");
+      const fallback = kind === "pdes" ? "Could not rerun on surviving nodes." : "Could not rerun the campaign on surviving nodes.";
+      setRerunError(cause instanceof Error ? cause.message : fallback);
     } finally {
       setRerunning(false);
     }
   };
 
-  const progress = pdesStatus && pdesStatus.windows_total > 0
-    ? Math.min(100, (pdesStatus.windows_done / pdesStatus.windows_total) * 100)
-    : 0;
+  const windowsLabel = kind === "pdes" ? "Simulation windows" : "Campaign windows";
   return (
     <section className="page-content" aria-labelledby="live-heading">
       <PageHeading
         id="live-heading"
-        eyebrow="PARTITIONED RUN"
-        title="PDES progress"
-        lede={<>{pdesStatus?.phase ?? "Waiting for status"} · seed {record.params.base_seed}</>}
+        eyebrow={kind === "pdes" ? "PARTITIONED RUN" : "PARTITIONED THREAT CAMPAIGN"}
+        title={kind === "pdes" ? "PDES progress" : "Campaign progress"}
+        lede={<>{partitionedStatus?.phase ?? "Waiting for status"} · seed {record.params.base_seed}</>}
         actions={<StateBadge state={state} />}
       />
       <StatStrip variant="meta" items={[
         { label: "Coordinator", value: record.coordinator },
         { label: "Partitions", value: record.params.parts ?? report?.plan.parts ?? "--" },
-        { label: "Simulated time", value: pdesStatus ? `${pdesStatus.simulated_time.toFixed(2)} / ${scenario?.duration ?? 0} s` : "--" },
-        { label: "Windows", value: pdesStatus ? `${pdesStatus.windows_done.toLocaleString()} / ${pdesStatus.windows_total.toLocaleString()}` : "--" },
+        { label: "Simulated time", value: partitionedStatus ? `${partitionedStatus.simulated_time.toFixed(2)} / ${duration} s` : "--" },
         { label: "Batch ID", value: record.batch_id, wide: true },
       ]} />
       <div className="panel">
-        <div className="progress-head"><span>Simulation windows</span><strong>{progress.toFixed(1)}%</strong></div>
-        <div className="progress-track" role="progressbar" aria-label="Simulation windows" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
-          <span className="progress-complete" style={{ width: `${progress}%` }} />
-        </div>
+        <ProgressBar
+          done={partitionedStatus?.windows_done ?? 0}
+          total={partitionedStatus?.windows_total ?? 0}
+          label={windowsLabel}
+          percentageDigits={1}
+        />
       </div>
-      {pdesStatus?.stale && <Notice kind="warning">Showing the last stored partition snapshot; the coordinator is unavailable.</Notice>}
+      {partitionedStatus?.stale && <Notice kind="warning">Showing the last stored partition snapshot; the coordinator is unavailable.</Notice>}
       {state === "failed" && <Notice kind="error">
-        <strong>Partitioned run failed{pdesStatus?.failed_node ? ` on ${pdesStatus.failed_node}` : ""}.</strong> {pdesStatus?.error ?? report?.error ?? "The coordinator reported a worker failure."}
-        {scenario && <button className="ghost-button" type="button" disabled={rerunning} onClick={() => void rerun()}>{rerunning ? "Rerunning…" : "Rerun on surviving nodes"}</button>}
+        <strong>{kind === "pdes" ? "Partitioned run failed" : "Campaign failed"}{partitionedStatus?.failed_node ? ` on ${partitionedStatus.failed_node}` : ""}.</strong> {partitionedStatus?.error ?? report?.error ?? "The coordinator reported a worker failure."}
+        {canRerun && <button className="ghost-button" type="button" disabled={rerunning} onClick={() => void rerun()}>{rerunning ? "Rerunning…" : "Rerun on surviving nodes"}</button>}
         <a className="banner-action" href={`#/report/${encodeURIComponent(runId)}`}>View failure report<ArrowRight size={15} /></a>
       </Notice>}
       {state === "coordinator_lost" && <div className="lost-banner" role="alert">
         <Unplug size={20} /><div><strong>The coordinator {record.coordinator} stopped responding</strong>
-          <p>The partition state was volatile; restart the same scenario and base seed on the surviving nodes.</p>
-          {scenario && <button className="ghost-button" type="button" disabled={rerunning} onClick={() => void rerun()}>{rerunning ? "Rerunning…" : "Rerun on surviving nodes"}</button>}
+          <p>{kind === "pdes"
+            ? "The partition state was volatile; restart the same scenario and base seed on the surviving nodes."
+            : "The campaign state was volatile; restart the same campaign and base seed on the surviving nodes."}</p>
+          {canRerun && <button className="ghost-button" type="button" disabled={rerunning} onClick={() => void rerun()}>{rerunning ? "Rerunning…" : "Rerun on surviving nodes"}</button>}
         </div>
       </div>}
       {rerunError && <Notice kind="error">{rerunError}</Notice>}
-      {state === "complete" && <div className="complete-banner" role="status"><span><strong>Partitioned run complete.</strong> Merged metrics are ready.</span>
+      {state === "complete" && <div className="complete-banner" role="status">
+        <span><strong>{kind === "pdes" ? "Partitioned run complete." : "Campaign complete."}</strong> {kind === "pdes" ? "Merged metrics are ready." : "Merged campaign samples are ready."}</span>
         <a className="banner-action" href={`#/report/${encodeURIComponent(runId)}`}>View report<ArrowRight size={15} /></a></div>}
       <SectionTitle title="Per-partition timing" note="compute versus barrier wait" />
       <PartitionTimingList breakdown={timing} legend />
-      {scenario && report?.plan && <div className="pdes-topology-preview">
+      {kind === "pdes" && networkScenario && report?.plan && <div className="pdes-topology-preview">
         <SectionTitle title="Partition map" note="cut links connect different owners" />
-        <TopologyCanvas scenario={scenario} mode="partition" partitionAssignment={report.plan.assignment} cutLinks={report.plan.cut_links} />
+        <TopologyCanvas scenario={networkScenario} mode="partition" partitionAssignment={report.plan.assignment} cutLinks={report.plan.cut_links} />
       </div>}
-    </section>
-  );
-}
-
-function AttackLiveView({ api, runId, record, status, state }: {
-  api: ApiClient;
-  runId: string;
-  record: RunRecord;
-  status: RunStatus | null;
-  state: RunState;
-}) {
-  const [report, setReport] = useState<AttackReport | null>(null);
-  const [rerunning, setRerunning] = useState(false);
-  const [rerunError, setRerunError] = useState<string | null>(null);
-  const attackStatus: AttackStatus | null =
-    status && "kind" in status && status.kind === "attack" ? status : null;
-  const timing = partitionBreakdown(attackStatus?.partitions ?? report?.partitions ?? {});
-  const scenario = isAttackScenario(record.params.scenario) ? record.params.scenario : undefined;
-
-  useEffect(() => {
-    let active = true;
-    api.getReport(runId).then((next) => {
-      if (active && "kind" in next && next.kind === "attack") setReport(next);
-    }).catch(() => undefined);
-    return () => { active = false; };
-  }, [api, runId]);
-
-  const rerun = async () => {
-    if (!scenario) return;
-    setRerunning(true);
-    setRerunError(null);
-    try {
-      const cluster = await api.getCluster();
-      const excludedNode = attackStatus?.failed_node ?? (state === "coordinator_lost" ? record.coordinator : undefined);
-      const survivors = cluster.nodes.filter((node) => node.healthy && node.id !== excludedNode);
-      const parts = Math.min(survivors.length, scenario.nodes.length);
-      if (parts < 1 || survivors.length < 1) throw new Error("No surviving nodes are available to rerun this campaign.");
-      const created = await api.createAttackRun(
-        survivors[0].id, scenario, parts, record.params.base_seed, record.params.baseline ?? true,
-      );
-      window.location.hash = `#/live/${encodeURIComponent(created.run_id)}`;
-    } catch (cause) {
-      setRerunError(cause instanceof Error ? cause.message : "Could not rerun the campaign on surviving nodes.");
-    } finally {
-      setRerunning(false);
-    }
-  };
-
-  const progress = attackStatus && attackStatus.windows_total > 0
-    ? Math.min(100, (attackStatus.windows_done / attackStatus.windows_total) * 100)
-    : 0;
-  return (
-    <section className="page-content" aria-labelledby="live-heading">
-      <PageHeading
-        id="live-heading"
-        eyebrow="PARTITIONED THREAT CAMPAIGN"
-        title="Campaign progress"
-        lede={<>{attackStatus?.phase ?? "Waiting for status"} · seed {record.params.base_seed}</>}
-        actions={<StateBadge state={state} />}
-      />
-      <StatStrip variant="meta" items={[
-        { label: "Coordinator", value: record.coordinator },
-        { label: "Partitions", value: record.params.parts ?? report?.plan.parts ?? "--" },
-        { label: "Simulated time", value: attackStatus ? `${attackStatus.simulated_time.toFixed(2)} / ${scenario?.duration ?? 0} s` : "--" },
-        { label: "Windows", value: attackStatus ? `${attackStatus.windows_done.toLocaleString()} / ${attackStatus.windows_total.toLocaleString()}` : "--" },
-        { label: "Batch ID", value: record.batch_id, wide: true },
-      ]} />
-      <div className="panel">
-        <div className="progress-head"><span>Campaign windows</span><strong>{progress.toFixed(1)}%</strong></div>
-        <div className="progress-track" role="progressbar" aria-label="Campaign windows" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
-          <span className="progress-complete" style={{ width: `${progress}%` }} />
-        </div>
-      </div>
-      {attackStatus?.stale && <Notice kind="warning">Showing the last stored partition snapshot; the coordinator is unavailable.</Notice>}
-      {state === "failed" && <Notice kind="error">
-        <strong>Campaign failed{attackStatus?.failed_node ? ` on ${attackStatus.failed_node}` : ""}.</strong> {attackStatus?.error ?? report?.error ?? "The coordinator reported a worker failure."}
-        {scenario && <button className="ghost-button" type="button" disabled={rerunning} onClick={() => void rerun()}>{rerunning ? "Rerunning…" : "Rerun on surviving nodes"}</button>}
-        <a className="banner-action" href={`#/report/${encodeURIComponent(runId)}`}>View failure report<ArrowRight size={15} /></a>
-      </Notice>}
-      {state === "coordinator_lost" && <div className="lost-banner" role="alert">
-        <Unplug size={20} /><div><strong>The coordinator {record.coordinator} stopped responding</strong>
-          <p>The campaign state was volatile; restart the same campaign and base seed on the surviving nodes.</p>
-          {scenario && <button className="ghost-button" type="button" disabled={rerunning} onClick={() => void rerun()}>{rerunning ? "Rerunning…" : "Rerun on surviving nodes"}</button>}
-        </div>
-      </div>}
-      {rerunError && <Notice kind="error">{rerunError}</Notice>}
-      {state === "complete" && <div className="complete-banner" role="status"><span><strong>Campaign complete.</strong> Merged campaign samples are ready.</span>
-        <a className="banner-action" href={`#/report/${encodeURIComponent(runId)}`}>View report<ArrowRight size={15} /></a></div>}
-      <SectionTitle title="Per-partition timing" note="compute versus barrier wait" />
-      <PartitionTimingList breakdown={timing} legend />
     </section>
   );
 }

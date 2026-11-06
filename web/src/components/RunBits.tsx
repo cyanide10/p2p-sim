@@ -1,4 +1,5 @@
 import { CircleCheck, CircleHelp, CircleX, LoaderCircle, Unplug } from "lucide-react";
+import type { ReactNode } from "react";
 import type { RunState, TaskCounts, TaskDetail } from "../api/types";
 
 const stateLabels: Record<RunState, string> = {
@@ -22,19 +23,37 @@ export function StateBadge({ state }: { state: RunState }) {
   return <span className={`state-badge state-${state}`}>{icon}{stateLabels[state]}</span>;
 }
 
-export function ProgressBar({ counts, total, label }: { counts: TaskCounts; total: number; label: string }) {
+/**
+ * Progress bar with counts inline. Batch runs pass task `counts` (complete,
+ * in-flight and failed segments); window-based PDES/attack runs pass a single
+ * `done` count for the current coordination window.
+ */
+export function ProgressBar({ counts, total, label, done: doneCount, detail, percentageDigits = 0 }: {
+  counts?: TaskCounts;
+  total: number;
+  label: string;
+  done?: number;
+  detail?: ReactNode;
+  percentageDigits?: number;
+}) {
+  const complete = doneCount ?? counts?.complete ?? 0;
   const pct = (value: number) => (total > 0 ? (value / total) * 100 : 0);
-  const done = pct(counts.complete);
+  const done = pct(complete);
   return (
     <div className="progress-block">
       <div className="progress-head">
         <span>{label}</span>
-        <strong>{counts.complete.toLocaleString()} / {total.toLocaleString()}<small> · {done.toFixed(0)}%</small></strong>
+        <strong>
+          {complete.toLocaleString()} / {total.toLocaleString()}<small> · {done.toFixed(percentageDigits)}%</small>
+          {detail !== undefined && <small> · {detail}</small>}
+        </strong>
       </div>
-      <div className="progress-track" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={total} aria-valuenow={counts.complete}>
+      <div className="progress-track" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={total} aria-valuenow={complete}>
         <span className="progress-complete" style={{ width: `${done}%` }} />
-        <span className="progress-assigned" style={{ width: `${pct(counts.assigned)}%` }} />
-        <span className="progress-failed" style={{ width: `${pct(counts.failed)}%` }} />
+        {counts && <>
+          <span className="progress-assigned" style={{ width: `${pct(counts.assigned)}%` }} />
+          <span className="progress-failed" style={{ width: `${pct(counts.failed)}%` }} />
+        </>}
       </div>
     </div>
   );

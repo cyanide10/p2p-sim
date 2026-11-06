@@ -3,6 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient } from "../api/client";
 import { PanelTitle, Notice, PageHeading, StatStrip } from "../components/PagePrimitives";
 import { LineChart } from "../components/charts/LineChart";
+import { ProgressBar } from "../components/RunBits";
 import { lastAtOrBefore, nearestIndex, niceScale, seriesSummary, timeTicks } from "../lib/chart";
 import type { MockScenario } from "../api/types";
 import {
@@ -300,7 +301,6 @@ export function TrafficPage({ scenario, mockEnabled }: { scenario: MockScenario;
   const duration = meta?.duration ?? params.duration;
   const theory = meta?.theory ?? null;
   const stats = state.stats;
-  const progress = duration > 0 ? Math.min(1, state.clock / duration) : 0;
 
   return (
     <section className="page-content traffic-content" aria-labelledby="traffic-heading">
@@ -346,9 +346,7 @@ export function TrafficPage({ scenario, mockEnabled }: { scenario: MockScenario;
         <PanelTitle title="Router" note={meta ? `node ${node} · seed ${meta.seed}` : mockEnabled ? "mock stream (computed in the browser)" : "waiting for a stream"} />
         <RouterStage state={state} frame={frame} lambda={params.lambda} mu={params.mu} layout={narrow ? COMPACT : WIDE} />
         <div className="sim-clock">
-          <span>Simulated time</span>
-          <div className="progress-track" role="progressbar" aria-label="Simulated time" aria-valuemin={0} aria-valuemax={duration} aria-valuenow={Math.round(state.clock)}><span className="progress-complete" style={{ width: `${progress * 100}%` }} /></div>
-          <strong>{state.clock.toFixed(1)} / {duration}</strong>
+          <ProgressBar done={state.clock} total={duration} label="Simulated time" />
         </div>
       </div>
 
