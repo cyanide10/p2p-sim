@@ -6,6 +6,7 @@ import { useEffect, useId, useMemo, useState, type CSSProperties, type ReactNode
 import { ApiError, createApiClient } from "../api/client";
 import { AxisFrame } from "../components/charts/AxisFrame";
 import { PageHeading, StatStrip } from "../components/PagePrimitives";
+import { StateBadge, type BadgeTone } from "../components/RunBits";
 import { seriesSummary } from "../lib/chart";
 import type { AttackReport, AttackStatus, MockScenario, PartitionPlan, RunCreated } from "../api/types";
 import { AttackMap } from "../components/AttackMap";
@@ -53,9 +54,9 @@ const roleLabel: Record<NodeRole, string> = {
   bot: "Bot cluster",
 };
 
-function nodeHealth(node: AttackNode, sample: AttackSample, kind: AttackKind): { label: string; tone: string } {
+function nodeHealth(node: AttackNode, sample: AttackSample, kind: AttackKind): { label: string; tone: BadgeTone } {
   const state = sample.nodes[node.id];
-  if (!state) return { label: "No telemetry", tone: "muted" };
+  if (!state) return { label: "No telemetry", tone: "neutral" };
   if (state.compromise > 0.68) return { label: kind === "worm" || kind === "exfil" ? "Compromised" : "Hostile", tone: "bad" };
   if (state.load > 1.1) return { label: "Saturated", tone: "bad" };
   if (state.load > 0.84) return { label: "Critical", tone: "warn" };
@@ -87,6 +88,18 @@ function AttackChart({ run, clock, onSeek, variant }: {
   const summary = impact
     ? `${seriesSummary("Impact", run.samples.map((sample) => sample.impactPct))} ${seriesSummary("Availability", run.samples.map((sample) => sample.availability))}`
     : seriesSummary("Attack load", run.samples.map((sample) => sample.attackLoad));
+  const legend = impact ? (
+    <>
+      <span><i className="is-impact" />impact</span>
+      <span><i className="is-uptime" />availability</span>
+    </>
+  ) : (
+    <>
+      <span><i style={{ background: run.scenario.accent }} />attack</span>
+      <span><i className="is-legit" />legitimate</span>
+      <span><i className="is-capacity" />capacity</span>
+    </>
+  );
 
   return (
     <AxisFrame
@@ -103,6 +116,7 @@ function AttackChart({ run, clock, onSeek, variant }: {
       gridClassName="attack-chart-grid"
       axisClassName="attack-chart-axis"
       ariaLabel={impact ? `Impact and availability over the campaign. ${summary}` : `Attack load versus target capacity over the campaign. ${summary}`}
+      legend={legend}
       caption={<text className="attack-chart-axis" x={pad.left} y={12}>{impact ? `${run.scenario.impactLabel} · availability` : `${run.scenario.attackLabel} · ${run.scenario.unit}`}</text>}
       onSeek={onSeek}
     >
@@ -392,7 +406,8 @@ export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario 
 
   const capacityStep = kind === "worm" ? 5 : kind === "ddos" ? 1 : 0.1;
   const scaleStep = 500;
-  const targetTone = sample.targetState === "secure" ? "good" : sample.targetState === "degraded" ? "warn" : "bad";
+  const targetTone: BadgeTone = sample.targetState === "secure" ? "good" : sample.targetState === "degraded" ? "warn" : "bad";
+  const remoteTone: BadgeTone = remoteState === "failed" ? "bad" : remoteReport ? "good" : "warn";
 
   return (
     <section className="page-content attack-content" aria-labelledby="attack-heading">
@@ -514,9 +529,11 @@ export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario 
         {remote && (
           <div className={`attack-exec-status ${remoteReport ? "is-done" : ""}`} role="status">
             <div className="attack-exec-status-head">
-              <span className={`attack-status tone-${remoteState === "failed" ? "bad" : remoteReport ? "good" : "warn"}`}>
-                {remoteState === "failed" ? "failed" : remoteReport ? "complete" : remoteState ?? "queued"}
-              </span>
+              <StateBadge
+                className="attack-status"
+                tone={remoteTone}
+                label={remoteState === "failed" ? "failed" : remoteReport ? "complete" : remoteState ?? "queued"}
+              />
               <code>{remote.runId}</code>
               <span>{effectiveParts === 1 ? "1 worker" : `${effectiveParts} partitions`}</span>
             </div>
@@ -561,11 +578,6 @@ export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario 
           <div className="attack-hud-live"><span className={playing ? "is-live" : ""} />{playing ? "SIMULATION RUNNING" : clock >= run.config.duration ? "CAMPAIGN COMPLETE" : "SIMULATION PAUSED"}<em className="attack-hud-source">{remoteRun ? executionLabel : "LOCAL MODEL"}</em></div>
           <div className="attack-hud-title"><span>{scenario.codename}</span><strong>{scenario.label}</strong></div>
           <div className="attack-hud-phase"><span>PHASE {phaseIndex + 1} / {scenario.phases.length}</span><strong>{phase.label}</strong></div>
-          <div className="attack-hud-threat">
-            <span>THREAT INDEX</span>
-            <div className="attack-threat-meter"><i style={{ width: `${threat}%` }} /></div>
-            <strong className={`tone-${threat >= 68 ? "bad" : threat >= 42 ? "warn" : "good"}`}>{threat} · {threatLabel(threat)}</strong>
-          </div>
           <div className="attack-hud-clock">{durationText(clock)}</div>
         </div>
 
@@ -580,7 +592,7 @@ export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario 
                   <div className="attack-inspector-head">
                     {selectedNode.role === "target" ? <ShieldAlert size={18} /> : selectedNode.role === "edge" ? <Shield size={18} /> : selectedNode.role === "bot" ? <Globe2 size={18} /> : <Server size={18} />}
                     <strong>{selectedNode.label}</strong>
-                    <span className={`attack-status tone-${selectedHealth.tone}`}>{selectedHealth.label}</span>
+                    <StateBadge className="attack-status" tone={selectedHealth.tone} label={selectedHealth.label} />
                   </div>
                   <dl>
                     <div><dt>Represented units</dt><dd>{selectedNode.units.toLocaleString()}</dd></div>
@@ -620,7 +632,7 @@ export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario 
 
           <aside className="attack-rail">
             <section className="attack-posture">
-              <div className="attack-rail-title"><span>TARGET POSTURE</span><span className={`attack-status tone-${targetTone}`}>{sample.targetState}</span></div>
+              <div className="attack-rail-title"><span>TARGET POSTURE</span><StateBadge className="attack-status" tone={targetTone} label={sample.targetState} /></div>
               <div className="attack-target">
                 <div className={`attack-target-mark tone-${targetTone}`}>{sample.targetState === "secure" ? <CircleCheck size={22} /> : <TriangleAlert size={22} />}</div>
                 <div><strong>DC-CORE</strong><span>{targetCopy[sample.targetState]}</span></div>
@@ -641,12 +653,8 @@ export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario 
             </section>
 
             <StatStrip variant="soc" items={[
-              { label: scenario.attackLabel, value: compact(sample.attackLoad), small: scenario.unit, note: <em>{sample.loadRatio.toFixed(2)}× capacity</em> },
               { label: scenario.impactLabel, value: impactValue, small: scenario.impactUnit, note: <em>current impact</em> },
-              { label: "Availability", value: sample.availability.toFixed(1), small: "%", note: <em>{sample.targetState === "secure" ? "within SLO" : "below SLO"}</em> },
               { label: "Latency", value: latency.value, small: latency.unit, note: <em>p95 service response</em> },
-              { label: isFlood ? "Botnet engaged" : "Compromised", value: compact(exposureValue), small: isFlood ? "bots" : "hosts", note: <em>{isFlood ? `${percent(exposurePct, 0)} of botnet` : `${percent(exposurePct, 1)} of estate`}</em> },
-              { label: "Attack blocked", value: sample.blocked.toFixed(0), small: "%", note: <em>{defense === 0 ? "no defence enabled" : "active controls"}</em> },
             ]} />
 
             <section className="attack-log">
@@ -674,21 +682,12 @@ export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario 
           <section className="attack-chart-panel">
             <div className="attack-chart-head">
               <div><h2>Offered load vs capacity</h2><p>Attack traffic and legitimate baseline against the target's design limit.</p></div>
-              <div className="attack-chart-legend-row">
-                <span><i style={{ background: scenario.accent }} />attack</span>
-                <span><i className="is-legit" />legitimate</span>
-                <span><i className="is-capacity" />capacity</span>
-              </div>
             </div>
             <AttackChart run={run} clock={clock} onSeek={seek} variant="load" />
           </section>
           <section className="attack-chart-panel">
             <div className="attack-chart-head">
               <div><h2>{scenario.impactLabel} & availability</h2><p>How far the estate falls below its service level, and how quickly it recovers.</p></div>
-              <div className="attack-chart-legend-row">
-                <span><i className="is-impact" />impact</span>
-                <span><i className="is-uptime" />uptime</span>
-              </div>
             </div>
             <AttackChart run={run} clock={clock} onSeek={seek} variant="impact" />
           </section>

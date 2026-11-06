@@ -1,14 +1,19 @@
-import { LoaderCircle, Pause, Play, RotateCcw, TriangleAlert } from "lucide-react";
+import { Pause, Play, RotateCcw, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../api/client";
 import { applyNetEvents, flowSlot, initialLive, playbackSpeeds, toWire, type NetLiveState, type NetStreamEvent, type Scenario } from "../lib/network";
 import { Notice } from "./PagePrimitives";
+import { StateBadge, type BadgeTone } from "./RunBits";
 import { TopologyCanvas } from "./TopologyCanvas";
 
 type Status = "idle" | "connecting" | "playing" | "paused" | "finished" | "error";
 
 const statusText: Record<Status, string> = {
   idle: "Ready", connecting: "Starting", playing: "Playing", paused: "Paused", finished: "Finished", error: "Error",
+};
+
+const statusTone: Record<Status, BadgeTone> = {
+  idle: "neutral", connecting: "active", playing: "active", paused: "neutral", finished: "good", error: "bad",
 };
 
 interface Props {
@@ -119,7 +124,7 @@ export function NetworkPlayer({ api, scenario, copies, autoPlay = false, default
           : status === "finished"
             ? <button type="button" className="primary-button player-btn" onClick={() => play(0)}><RotateCcw size={14} />Replay</button>
             : <button type="button" className="primary-button player-btn" disabled={!node} onClick={() => play(status === "paused" ? live.clock : 0)}><Play size={14} fill="currentColor" />{status === "paused" ? "Resume" : "Play"}</button>}
-        <span className={`state-badge player-status player-${status}`}>{status === "connecting" && <LoaderCircle size={13} className="button-spin" />}{status === "connecting" && live.clock > 0 ? "Seeking" : statusText[status]}</span>
+        <StateBadge className="player-status" label={status === "connecting" && live.clock > 0 ? "Seeking" : statusText[status]} tone={statusTone[status]} busy={status === "connecting"} />
         <label className="player-slider">
           <span className="sr-only">Simulated time</span>
           <input type="range" min={0} max={duration} step={duration / 1000} value={shownT}

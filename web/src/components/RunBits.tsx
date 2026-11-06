@@ -10,8 +10,28 @@ const stateLabels: Record<RunState, string> = {
   unknown: "Unknown",
 };
 
-export function StateBadge({ state }: { state: RunState }) {
-  const icon = state === "running"
+export type BadgeTone = "active" | "good" | "warn" | "bad" | "neutral";
+
+const toneState: Record<BadgeTone, string> = {
+  active: "running",
+  good: "complete",
+  warn: "warn",
+  bad: "failed",
+  neutral: "unknown",
+};
+
+/**
+ * Shared status pill. Pass a RunState for run semantics and icon, or a label
+ * plus tone for page-local transport states (worker/PDES streams, player).
+ */
+export function StateBadge({ state, label, tone = "neutral", busy, className }: {
+  state?: RunState;
+  label?: string;
+  tone?: BadgeTone;
+  busy?: boolean;
+  className?: string;
+}) {
+  const icon = state === "running" || busy
     ? <LoaderCircle size={14} className="button-spin" />
     : state === "complete"
       ? <CircleCheck size={14} />
@@ -19,8 +39,15 @@ export function StateBadge({ state }: { state: RunState }) {
         ? <Unplug size={14} />
         : state === "failed"
           ? <CircleX size={14} />
-          : <CircleHelp size={14} />;
-  return <span className={`state-badge state-${state}`}>{icon}{stateLabels[state]}</span>;
+          : state === "unknown"
+            ? <CircleHelp size={14} />
+            : null;
+  const toneClass = state ? `state-${state}` : `state-${toneState[tone]}`;
+  return (
+    <span className={`state-badge ${toneClass}${className ? ` ${className}` : ""}`}>
+      {icon}{label ?? (state ? stateLabels[state] : "")}
+    </span>
+  );
 }
 
 /**

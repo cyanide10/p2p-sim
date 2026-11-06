@@ -1,9 +1,9 @@
-import { Dices, LoaderCircle, Play, Square, TriangleAlert } from "lucide-react";
+import { Dices, Play, Square, TriangleAlert } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient } from "../api/client";
 import { PanelTitle, Notice, PageHeading, StatStrip } from "../components/PagePrimitives";
 import { LineChart } from "../components/charts/LineChart";
-import { ProgressBar } from "../components/RunBits";
+import { ProgressBar, StateBadge, type BadgeTone } from "../components/RunBits";
 import { lastAtOrBefore, nearestIndex, niceScale, seriesSummary, timeTicks } from "../lib/chart";
 import type { MockScenario } from "../api/types";
 import {
@@ -15,6 +15,11 @@ type Status = "idle" | "connecting" | "streaming" | "finished" | "stopped" | "er
 
 const statusLabels: Record<Status, string> = {
   idle: "Idle", connecting: "Connecting", streaming: "Streaming", finished: "Finished", stopped: "Stopped", error: "Error",
+};
+
+const statusTone: Record<Status, BadgeTone> = {
+  idle: "neutral", connecting: "active", streaming: "active",
+  finished: "good", stopped: "neutral", error: "bad",
 };
 
 const presets = [
@@ -50,7 +55,7 @@ function useNarrow(breakpoint = 640) {
   return narrow;
 }
 
-const RouterStage = memo(function RouterStage({ state, frame, lambda, mu, layout }: { state: TrafficState; frame: number; lambda: number; mu: number; layout: Layout }) {
+const RouterStage = memo(function RouterStage({ state, frame, layout }: { state: TrafficState; frame: number; layout: Layout }) {
   const L = layout;
   const SOURCE = { x: L.source, y: Y }, SERVER = { x: L.server, y: Y }, SINK = { x: L.sink, y: Y };
   const slot = (index: number) => ({ x: L.head - index * L.gap, y: Y });
@@ -88,11 +93,9 @@ const RouterStage = memo(function RouterStage({ state, frame, lambda, mu, layout
       <circle className={`stage-node stage-server ${state.serving === null ? "" : "is-busy"}`} cx={L.server} cy={Y} r={38} />
       <circle className="stage-node" cx={L.sink} cy={Y} r={22} />
       <text className="stage-label" style={label} x={L.source} y={34} textAnchor="middle">Arrivals</text>
-      <text className="stage-sub" style={sub} x={L.source} y={54} textAnchor="middle">λ = {lambda}</text>
       <text className="stage-label" style={label} x={bufferMid} y={34} textAnchor="middle">Buffer · FIFO</text>
       <text className="stage-sub" style={sub} x={bufferMid} y={54} textAnchor="middle">{state.queue.length} waiting</text>
       <text className="stage-label" style={label} x={L.server} y={34} textAnchor="middle">Server</text>
-      <text className="stage-sub" style={sub} x={L.server} y={54} textAnchor="middle">μ = {mu}</text>
       <text className="stage-label" style={label} x={L.sink} y={34} textAnchor="middle">Out</text>
       <text className="stage-sub" style={sub} x={L.sink} y={54} textAnchor="middle">{state.stats?.served ?? 0}</text>
       {hidden > 0 && <text className="stage-overflow" style={sub} x={bufferMid} y={170} textAnchor="middle">+{hidden} more waiting</text>}
@@ -278,7 +281,8 @@ export function TrafficPage({ scenario, mockEnabled }: { scenario: MockScenario;
   };
   const errors = validateTraffic(params);
   const running = status === "connecting" || status === "streaming";
-  const rho = params.mu > 0 ? params.lambda / params.mu : NaN;
+  const packetsPerSecond = params.lambda * params.speed;
+  const runSeconds = params.duration / params.speed;
 
   const start = () => {
     if (errors.length || !node) return;
@@ -309,7 +313,7 @@ export function TrafficPage({ scenario, mockEnabled }: { scenario: MockScenario;
         eyebrow="LIVE TRAFFIC"
         title="Traffic"
         lede="One router queue, simulated in real time on the node you pick. Every packet you see is an event from that node."
-        actions={<span className={`state-badge traffic-${status}`}>{running && <LoaderCircle size={14} className="button-spin" />}{statusLabels[status]}</span>}
+        actions={<StateBadge label={statusLabels[status]} tone={statusTone[status]} busy={running} />}
       />
 
       {loadError && <Notice kind="error">{loadError}</Notice>}
@@ -335,8 +339,9 @@ export function TrafficPage({ scenario, mockEnabled }: { scenario: MockScenario;
         <div className="traffic-presets" role="group" aria-label="Load presets">
           {presets.map((p) => <button type="button" key={p.label} disabled={running} onClick={() => setDraft((d) => ({ ...d, lambda: String(p.lambda), mu: String(p.mu) }))}>{p.label}</button>)}
           <span className="traffic-hint">
-            ρ = {Number.isFinite(rho) ? rho.toFixed(2) : "--"} · ≈ {Number.isFinite(params.lambda * params.speed) ? (params.lambda * params.speed).toFixed(1) : "--"} packets/s · runs {Number.isFinite(params.duration / params.speed) ? Math.round(params.duration / params.speed) : "--"} s
-            {rho >= 1 && rho <= 1.5 ? " · overloaded: the queue will keep growing" : ""}
+            Work arriving vs service rate · ρ ≥ 1 grows the queue
+            {Number.isFinite(packetsPerSecond) && ` · ≈ ${packetsPerSecond.toFixed(1)} packets/s`}
+            {Number.isFinite(runSeconds) && ` · runs ${Math.round(runSeconds)} s`}
           </span>
         </div>
         {errors.length > 0 && <div className="inline-warning traffic-errors"><TriangleAlert size={15} />{errors.join(" ")}</div>}
@@ -344,7 +349,7 @@ export function TrafficPage({ scenario, mockEnabled }: { scenario: MockScenario;
 
       <div className="panel stage-panel">
         <PanelTitle title="Router" note={meta ? `node ${node} · seed ${meta.seed}` : mockEnabled ? "mock stream (computed in the browser)" : "waiting for a stream"} />
-        <RouterStage state={state} frame={frame} lambda={params.lambda} mu={params.mu} layout={narrow ? COMPACT : WIDE} />
+        <RouterStage state={state} frame={frame} layout={narrow ? COMPACT : WIDE} />
         <div className="sim-clock">
           <ProgressBar done={state.clock} total={duration} label="Simulated time" />
         </div>
