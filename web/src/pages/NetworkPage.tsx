@@ -1,5 +1,5 @@
 import { ArrowLeft, CircleDot, Download, FilePlus2, Link2, LoaderCircle, MousePointer2, Network, Play, Plus, Server, Trash2, TriangleAlert, Upload, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ApiError, createApiClient } from "../api/client";
 import type { MockScenario } from "../api/types";
 import type { PartitionPlan } from "../api/types";
@@ -26,11 +26,16 @@ function loadSaved(): Scenario {
 /** Number input that lets the user type freely and commits only valid numbers. */
 function NumInput({ value, onChange, min = 0, step = "any", label, disabled }: { value: number; onChange: (v: number) => void; min?: number; step?: string; label: string; disabled?: boolean }) {
   const [text, setText] = useState(String(value));
+  const hintId = useId();
   useEffect(() => { if (Number(text) !== value) setText(String(value)); }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+  const empty = text.trim() === "";
+  const invalid = empty || !Number.isFinite(Number(text)) || Number(text) < min;
   return (
     <label className="net-field"><span>{label}</span>
-      <input type="number" min={min} step={step} value={text} disabled={disabled} aria-invalid={!Number.isFinite(Number(text)) || Number(text) < min}
+      <input type="number" min={min} step={step} value={text} disabled={disabled} aria-invalid={invalid}
+        aria-describedby={invalid ? hintId : undefined}
         onChange={(e) => { setText(e.target.value); const v = Number(e.target.value); if (e.target.value.trim() !== "" && Number.isFinite(v) && v >= min) onChange(v); }} />
+      {invalid && <span className="field-help" id={hintId}>{empty ? "Enter a number." : `Enter a number ≥ ${min}.`}</span>}
     </label>
   );
 }
@@ -80,9 +85,16 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
     flowRate: 8, bandwidth: 20, delay: 2, serviceRate: 100, buffer: 50, duration: 600,
   });
   const [view, setView] = useState<"edit" | "live">("edit");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [notice, setNotice] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const runInFlight = submitting || planning || partitionPlan !== null || view === "live";
+
+  useEffect(() => {
+    if (runInFlight) setAdvancedOpen(true);
+  }, [runInFlight]);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sc)); } catch { /* storage unavailable */ }
@@ -149,15 +161,13 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
     setSelected(null);
   };
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (view !== "edit" || (e.target as HTMLElement).closest("input, select, textarea")) return;
-      if ((e.key === "Delete" || e.key === "Backspace") && selected) { e.preventDefault(); remove(selected); }
-      if (e.key === "Escape") { setPendingLink(null); setSelected(null); }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
+  // Shortcuts only fire while the canvas itself has focus, so they never
+  // steal Delete/Escape from form fields in the inspector or run bar.
+  const onCanvasKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (view !== "edit") return;
+    if ((e.key === "Delete" || e.key === "Backspace") && selected) { e.preventDefault(); remove(selected); }
+    if (e.key === "Escape") { setPendingLink(null); setSelected(null); }
+  };
 
   const addFlow = () => {
     if (hosts.length < 2) return setNotice({ kind: "error", text: "Add at least two hosts first." });
@@ -280,23 +290,19 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
 
       <div className="net-runbar">
         <div className="net-run-group">
-          <strong>Watch live</strong>
+          <strong>Run</strong>
           <label className="net-field"><span>Node</span>
-            <select value={liveNode} onChange={(e) => setLiveNode(e.target.value)} disabled={view === "live"}>
-              {pool.map((n) => <option key={n.id} value={n.id} disabled={!n.healthy}>{n.id}{n.healthy ? "" : " · down"}</option>)}
-            </select></label>
-          <button type="button" className="primary-button net-btn" onClick={startLive} disabled={errors.length > 0 || !liveNode || view === "live"}><Play size={14} fill="currentColor" />Watch live</button>
-        </div>
-        <div className="net-run-group">
-          <strong>Run on all nodes</strong>
-          <label className="net-field"><span>Coordinator</span>
-            <select value={coordinator} onChange={(e) => setCoordinator(e.target.value)}>
+            <select
+              value={liveNode}
+              onChange={(e) => { setLiveNode(e.target.value); setCoordinator(e.target.value); }}
+              disabled={view === "live"}
+            >
               {pool.map((n) => <option key={n.id} value={n.id} disabled={!n.healthy}>{n.id}{n.healthy ? "" : " · down"}</option>)}
             </select></label>
           <NumInput label="Copies" value={copies} onChange={(v) => setCopies(Math.round(v))} min={2} step="1" />
-          <NumInput label="Seed" value={seed} onChange={(v) => setSeed(Math.round(v))} step="1" />
-          <button type="button" className="primary-button net-btn" onClick={() => void runCluster()} disabled={errors.length > 0 || submitting || !coordinator}>
-            {submitting ? <LoaderCircle size={14} className="button-spin" /> : <Play size={14} fill="currentColor" />}Run {copies} copies
+          <button type="button" className="primary-button net-btn" onClick={startLive} disabled={errors.length > 0 || !liveNode || view === "live"}><Play size={14} fill="currentColor" />Run</button>
+          <button type="button" className="ghost-button net-btn" onClick={() => void runCluster()} disabled={errors.length > 0 || submitting || !coordinator}>
+            {submitting ? <LoaderCircle size={14} className="button-spin" /> : <Play size={14} fill="currentColor" />}Run on all nodes
           </button>
         </div>
         <p className="net-run-hint">
@@ -304,46 +310,6 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
         </p>
         {errors.length > 0 && <ul className="net-errors">{errors.slice(0, 5).map((e) => <li key={e}><TriangleAlert size={13} />{e}</li>)}</ul>}
       </div>
-
-      <section className="pdes-launch-panel" aria-labelledby="pdes-launch-heading">
-        <div className="pdes-panel-heading">
-          <div><p className="eyebrow">PARTITIONED EXECUTION</p><h2 id="pdes-launch-heading">Generate a grid and run PDES</h2></div>
-          <button className="ghost-button" type="button" onClick={generate}><Network size={15} />Generate grid</button>
-        </div>
-        <div className="pdes-generator-grid">
-          <label className="net-field"><span>Layout</span><select value={grid.topology} onChange={(event) => setGrid({ ...grid, topology: event.target.value as GridOptions["topology"] })}><option value="grid">Grid</option><option value="torus">Torus</option></select></label>
-          <NumInput label="Router rows" value={grid.rows} onChange={(v) => setGrid({ ...grid, rows: Math.round(v) })} min={2} step="1" />
-          <NumInput label="Router columns" value={grid.columns} onChange={(v) => setGrid({ ...grid, columns: Math.round(v) })} min={2} step="1" />
-          <NumInput label="Hosts / router" value={grid.hostsPerRouter} onChange={(v) => setGrid({ ...grid, hostsPerRouter: Math.round(v) })} min={1} step="1" />
-          <NumInput label="Flows" value={grid.flowCount} onChange={(v) => setGrid({ ...grid, flowCount: Math.round(v) })} min={1} step="1" />
-          <NumInput label="Flow rate" value={grid.flowRate} onChange={(v) => setGrid({ ...grid, flowRate: v })} min={0.01} />
-          <NumInput label="Bandwidth" value={grid.bandwidth} onChange={(v) => setGrid({ ...grid, bandwidth: v })} min={0.01} />
-          <NumInput label="Link delay (s)" value={grid.delay} onChange={(v) => setGrid({ ...grid, delay: v })} min={0} />
-          <NumInput label="Router service rate" value={grid.serviceRate} onChange={(v) => setGrid({ ...grid, serviceRate: v })} min={0.01} />
-          <NumInput label="Router buffer" value={grid.buffer} onChange={(v) => setGrid({ ...grid, buffer: Math.round(v) })} min={1} step="1" />
-          <NumInput label="Duration (s)" value={grid.duration} onChange={(v) => setGrid({ ...grid, duration: v })} min={1} />
-          <NumInput label="Generator seed" value={seed} onChange={setSeed} min={0} step="1" />
-        </div>
-        <div className="pdes-controls">
-          <label className="net-field"><span>Partitions</span><select value={parts} onChange={(event) => setParts(Number(event.target.value))}>
-            {Array.from({ length: Math.max(1, maxParts) }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}</option>)}
-          </select></label>
-          <label className="toggle-row"><input type="checkbox" checked={baseline} onChange={(event) => setBaseline(event.target.checked)} /><span className="toggle-copy"><strong>Run serial baseline</strong><small>Compare merged results with one-process execution.</small></span></label>
-          <button type="button" className="ghost-button" onClick={() => void previewPartitions()} disabled={planning || errors.length > 0 || !coordinator || maxParts < 1 || parts > maxParts}>
-            {planning ? <LoaderCircle size={15} className="button-spin" /> : <CircleDot size={15} />}Preview plan
-          </button>
-          <button type="button" className="primary-button" onClick={() => void runPDES()} disabled={!partitionPlan || submitting || errors.length > 0 || !coordinator}>
-            {submitting ? <LoaderCircle size={15} className="button-spin" /> : <Play size={15} fill="currentColor" />}Run partitioned
-          </button>
-        </div>
-        <p className="pdes-plan-note">{pool.filter((node) => node.healthy).length} healthy nodes · max {maxParts} partitions · same seed {seed} reproduces this generated traffic matrix.</p>
-        {partitionPlan && <div className="pdes-plan-summary" role="status">
-          <span><strong>Lookahead</strong> {partitionPlan.lookahead.toPrecision(4)} s</span>
-          <span><strong>Windows</strong> {partitionPlan.windows.toLocaleString()}</span>
-          <span><strong>Cut links</strong> {partitionPlan.cut_links.length ? partitionPlan.cut_links.join(", ") : "none"}</span>
-          <span><strong>Load</strong> {partitionPlan.load.join(" / ")}</span>
-        </div>}
-      </section>
 
       {view === "live" ? (
         <NetworkPlayer api={api} scenario={sc} copies={[{ label: `Seed ${seed}`, seed }]} autoPlay defaultNode={liveNode}
@@ -367,7 +333,15 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
               <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={(e) => { void importJson(e.target.files?.[0]); e.target.value = ""; }} />
             </div>
           <p className="net-tool-hint">{tools.find((t) => t.id === tool)?.hint}{tool === "select" && selected ? " · Delete key removes the selection" : ""}</p>
-          <div className="net-canvas">
+          <div
+            className="net-canvas"
+            ref={canvasRef}
+            tabIndex={0}
+            role="group"
+            aria-label="Network editor canvas"
+            onPointerDownCapture={() => canvasRef.current?.focus()}
+            onKeyDown={onCanvasKeyDown}
+          >
             <TopologyCanvas scenario={sc} mode="edit" tool={tool} selected={selected} pendingLink={pendingLink}
               partitionAssignment={partitionPlan?.assignment} cutLinks={partitionPlan?.cut_links}
               onSelect={setSelected} onPlace={place} onMove={(id, x, y) => update((d) => { const n = d.nodes.find((v) => v.id === id); if (n) { n.x = x; n.y = y; } })}
@@ -443,6 +417,51 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
         </aside>
       </div>
       )}
+
+      <section className="pdes-launch-panel" aria-labelledby="pdes-launch-heading">
+        <div className="pdes-panel-heading">
+          <div><p className="eyebrow">PARTITIONED EXECUTION</p><h2 id="pdes-launch-heading">Generate a grid and run PDES</h2></div>
+          <button className="ghost-button" type="button" onClick={generate}><Network size={15} />Generate grid</button>
+        </div>
+        <div className="pdes-generator-grid pdes-generator-primary">
+          <NumInput label="Run length (s)" value={grid.duration} onChange={(v) => setGrid({ ...grid, duration: v })} min={1} />
+          <label className="net-field"><span>Partitions</span><select value={parts} onChange={(event) => setParts(Number(event.target.value))}>
+            {Array.from({ length: Math.max(1, maxParts) }, (_, index) => index + 1).map((value) => <option key={value} value={value}>{value}</option>)}
+          </select></label>
+        </div>
+        <details className="pdes-advanced" open={advancedOpen}>
+          <summary onClick={(event) => { event.preventDefault(); setAdvancedOpen((open) => !open); }}>Advanced generator settings</summary>
+          <div className="pdes-generator-grid">
+            <label className="net-field"><span>Layout</span><select value={grid.topology} onChange={(event) => setGrid({ ...grid, topology: event.target.value as GridOptions["topology"] })}><option value="grid">Grid</option><option value="torus">Torus</option></select></label>
+            <NumInput label="Router rows" value={grid.rows} onChange={(v) => setGrid({ ...grid, rows: Math.round(v) })} min={2} step="1" />
+            <NumInput label="Router columns" value={grid.columns} onChange={(v) => setGrid({ ...grid, columns: Math.round(v) })} min={2} step="1" />
+            <NumInput label="Hosts / router" value={grid.hostsPerRouter} onChange={(v) => setGrid({ ...grid, hostsPerRouter: Math.round(v) })} min={1} step="1" />
+            <NumInput label="Flows" value={grid.flowCount} onChange={(v) => setGrid({ ...grid, flowCount: Math.round(v) })} min={1} step="1" />
+            <NumInput label="Flow rate" value={grid.flowRate} onChange={(v) => setGrid({ ...grid, flowRate: v })} min={0.01} />
+            <NumInput label="Bandwidth" value={grid.bandwidth} onChange={(v) => setGrid({ ...grid, bandwidth: v })} min={0.01} />
+            <NumInput label="Link delay (s)" value={grid.delay} onChange={(v) => setGrid({ ...grid, delay: v })} min={0} />
+            <NumInput label="Router service rate" value={grid.serviceRate} onChange={(v) => setGrid({ ...grid, serviceRate: v })} min={0.01} />
+            <NumInput label="Router buffer" value={grid.buffer} onChange={(v) => setGrid({ ...grid, buffer: Math.round(v) })} min={1} step="1" />
+            <NumInput label="Seed" value={seed} onChange={setSeed} min={0} step="1" />
+          </div>
+        </details>
+        <div className="pdes-controls">
+          <label className="toggle-row"><input type="checkbox" checked={baseline} onChange={(event) => setBaseline(event.target.checked)} /><span className="toggle-copy"><strong>Run serial baseline</strong><small>Compare merged results with one-process execution.</small></span></label>
+          <button type="button" className="ghost-button" onClick={() => void previewPartitions()} disabled={planning || errors.length > 0 || !coordinator || maxParts < 1 || parts > maxParts}>
+            {planning ? <LoaderCircle size={15} className="button-spin" /> : <CircleDot size={15} />}Preview plan
+          </button>
+          <button type="button" className="primary-button" onClick={() => void runPDES()} disabled={!partitionPlan || submitting || errors.length > 0 || !coordinator}>
+            {submitting ? <LoaderCircle size={15} className="button-spin" /> : <Play size={15} fill="currentColor" />}Run partitioned
+          </button>
+        </div>
+        <p className="pdes-plan-note">{pool.filter((node) => node.healthy).length} healthy nodes · max {maxParts} partitions · same seed {seed} reproduces this generated traffic matrix.</p>
+        {partitionPlan && <div className="pdes-plan-summary" role="status">
+          <span><strong>Lookahead</strong> {partitionPlan.lookahead.toPrecision(4)} s</span>
+          <span><strong>Windows</strong> {partitionPlan.windows.toLocaleString()}</span>
+          <span><strong>Cut links</strong> {partitionPlan.cut_links.length ? partitionPlan.cut_links.join(", ") : "none"}</span>
+          <span><strong>Load</strong> {partitionPlan.load.join(" / ")}</span>
+        </div>}
+      </section>
     </section>
   );
 }
