@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { partitionBreakdown, partitionClassForNode } from "./pdes";
+import { partitionBarWidths, partitionBreakdown, partitionClassForNode } from "./pdes";
 
 describe("partitionBreakdown", () => {
   it("sorts partitions and computes totals and bar scale", () => {
@@ -15,6 +15,20 @@ describe("partitionBreakdown", () => {
       totalWait: 3,
       maxTotal: 4,
     });
+  });
+});
+
+describe("partitionBarWidths", () => {
+  it("scales compute and wait against the widest partition", () => {
+    expect(partitionBarWidths(3, 1, 8)).toEqual({ compute: 37.5, wait: 12.5 });
+  });
+
+  it("falls back to a unit scale when no partition has timing yet", () => {
+    expect(partitionBarWidths(0, 0, 0)).toEqual({ compute: 0, wait: 0 });
+  });
+
+  it("clamps negative timings to zero width", () => {
+    expect(partitionBarWidths(-2, 4, 4)).toEqual({ compute: 0, wait: 100 });
   });
 });
 

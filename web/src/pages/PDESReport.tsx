@@ -1,6 +1,7 @@
-import { Activity, Check, CircleX, Copy, Network, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { Activity, Check, CircleX, Network, TriangleAlert } from "lucide-react";
+import { CopyJsonButton } from "../components/CopyJsonButton";
 import type { PDESMetrics, PDESReport } from "../api/types";
+import { PartitionTimingList } from "../components/PartitionTiming";
 import { TopologyCanvas } from "../components/TopologyCanvas";
 import { EmptyState, Notice, PageHeading, SectionTitle, StatStrip } from "../components/PagePrimitives";
 import { formatDuration, formatSpeedup } from "../lib/format";
@@ -35,13 +36,7 @@ function MetricSummary({ metrics }: { metrics: PDESMetrics }) {
 }
 
 export function PDESReportView({ report, runId }: { report: PDESReport; runId: string }) {
-  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
   const breakdown = partitionBreakdown(report.partitions);
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(JSON.stringify(report, null, 2)); setCopied("copied"); }
-    catch { setCopied("failed"); }
-    window.setTimeout(() => setCopied("idle"), 2000);
-  };
   const metrics = report.metrics;
 
   return (
@@ -54,7 +49,7 @@ export function PDESReportView({ report, runId }: { report: PDESReport; runId: s
         actions={<>
           <a className="ghost-button" href="#/network"><Network size={15} />Network lab</a>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}><Activity size={15} />Progress</a>
-          <button className="ghost-button" type="button" onClick={() => void copy()}><Copy size={15} />{copied === "copied" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy JSON"}</button>
+          <CopyJsonButton value={report} />
         </>}
       />
       {report.stale && <Notice kind="warning">Stored snapshot: the coordinator is unavailable.</Notice>}
@@ -70,19 +65,7 @@ export function PDESReportView({ report, runId }: { report: PDESReport; runId: s
       ]} />
 
       <SectionTitle title="Partition timing breakdown" note={`sum compute / barrier wait: ${breakdown.totalCompute.toFixed(2)} s / ${breakdown.totalWait.toFixed(2)} s`} />
-      <div className="partition-timing-list">
-        {breakdown.rows.map((row, index) => {
-          const scale = breakdown.maxTotal || 1;
-          return <div className="partition-timing-row" key={row.id}>
-            <strong>{row.id}</strong>
-            <div className="partition-time-track" aria-label={`${row.id}: ${row.compute.toFixed(3)} seconds compute, ${row.wait.toFixed(3)} seconds wait`}>
-              <span className={`partition-time-compute peer-${index % 6}`} style={{ width: `${(row.compute / scale) * 100}%` }} />
-              <span className="partition-time-wait" style={{ width: `${(row.wait / scale) * 100}%` }} />
-            </div>
-            <span>{row.compute.toFixed(2)}s / {row.wait.toFixed(2)}s · {row.messages.toLocaleString()} msgs · {(row.bytes / 1024).toFixed(1)} KiB</span>
-          </div>;
-        })}
-      </div>
+      <PartitionTimingList breakdown={breakdown} messagesDetail />
 
       <SectionTitle title="Partition map" note={`${report.plan.parts} parts · ${report.plan.cut_links.length} cut links`} />
       <div className="pdes-topology-preview"><TopologyCanvas scenario={report.scenario} mode="partition"

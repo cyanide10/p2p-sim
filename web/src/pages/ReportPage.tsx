@@ -1,10 +1,11 @@
-import { Activity, Check, CircleCheck, CircleX, Copy, History, RotateCcw, TriangleAlert, Unplug } from "lucide-react";
+import { Activity, Check, CircleCheck, CircleX, History, RotateCcw, TriangleAlert, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, createApiClient } from "../api/client";
 import type { MetricComparison, MockScenario, NetworkReport, NodeReport, RunRecord, RunReport } from "../api/types";
 import { NetworkReportView } from "./NetworkReport";
 import { PDESReportView } from "./PDESReport";
 import { AttackReportView } from "./AttackReport";
+import { CopyJsonButton } from "../components/CopyJsonButton";
 import { EmptyState, LoadingState, Notice, PageHeading, PanelTitle, SectionTitle, StatStrip } from "../components/PagePrimitives";
 
 function isNetworkReport(report: RunReport): report is NetworkReport {
@@ -83,7 +84,6 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
   const [record, setRecord] = useState<RunRecord | null>(null);
   const [report, setReport] = useState<RunReport | null>(null);
   const [error, setError] = useState<{ message: string; status: number | null } | null>(null);
-  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
 
   useEffect(() => {
     let active = true;
@@ -103,17 +103,6 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
     });
     return () => { active = false; };
   }, [api, runId]);
-
-  const copyJson = async () => {
-    if (!report) return;
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
-      setCopied("copied");
-    } catch {
-      setCopied("failed");
-    }
-    window.setTimeout(() => setCopied("idle"), 2000);
-  };
 
   if (error) {
     const lost = record?.state === "coordinator_lost";
@@ -159,10 +148,7 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
         lede={`${report.batch_id} · coordinated by ${report.coordinator}`}
         actions={<>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}><Activity size={15} />Live view</a>
-          <button className="ghost-button" type="button" onClick={() => void copyJson()} aria-live="polite">
-            {copied === "copied" ? <Check size={15} /> : <Copy size={15} />}
-            {copied === "copied" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy as JSON"}
-          </button>
+          <CopyJsonButton value={report} label="Copy as JSON" />
         </>}
       />
 

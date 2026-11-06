@@ -1,7 +1,8 @@
-import { Activity, Check, CircleCheck, CircleX, Copy, Network, TriangleAlert } from "lucide-react";
+import { Activity, CircleCheck, CircleX, Network, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import type { ApiClient } from "../api/client";
 import type { Band, Estimate, NetworkReport } from "../api/types";
+import { CopyJsonButton } from "../components/CopyJsonButton";
 import { NetworkPlayer } from "../components/NetworkPlayer";
 import { TopologyCanvas } from "../components/TopologyCanvas";
 import { Notice, PageHeading, PanelTitle, SectionTitle, StatStrip } from "../components/PagePrimitives";
@@ -80,7 +81,6 @@ function BandChart({ series, binWidth, duration, events, unit, scale = 1, label 
 // ---------------------------------------------------------------------------
 
 export function NetworkReportView({ report, runId, api }: { report: NetworkReport; runId: string; api: ApiClient }) {
-  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
   const sc = report.scenario;
   const totals = report.totals;
   const flowIndex = Object.fromEntries(sc.flows.map((f, i) => [f.id, i]));
@@ -90,10 +90,6 @@ export function NetworkReportView({ report, runId, api }: { report: NetworkRepor
   const peers = Object.entries(report.tasks_per_peer).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }));
   const maxPeer = Math.max(1, ...peers.map(([, c]) => c));
   const done = report.tasks.complete;
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(JSON.stringify(report, null, 2)); setCopied("copied"); } catch { setCopied("failed"); }
-    window.setTimeout(() => setCopied("idle"), 2000);
-  };
 
   return (
     <section className="page-content" aria-labelledby="netreport-heading">
@@ -105,10 +101,9 @@ export function NetworkReportView({ report, runId, api }: { report: NetworkRepor
         actions={<>
           <a className="ghost-button" href="#/network"><Network size={15} />Edit network</a>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}><Activity size={15} />Progress</a>
-          <button className="ghost-button" type="button" onClick={() => void copy()}>{copied === "copied" ? <Check size={15} /> : <Copy size={15} />}{copied === "copied" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy as JSON"}</button>
+          <CopyJsonButton value={report} label="Copy as JSON" />
         </>}
       />
-
       {report.verdict === "PENDING" && <Notice kind="warning">{report.verdict_detail}</Notice>}
       {report.stale && <Notice kind="warning">Stored snapshot: the coordinator is unavailable.</Notice>}
       {done > 0 && done < 10 && <Notice kind="warning"><TriangleAlert size={15} /> Only {done} copies: confidence intervals are wide. Run 30 or more for tighter estimates.</Notice>}

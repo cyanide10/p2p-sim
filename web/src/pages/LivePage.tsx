@@ -4,6 +4,7 @@ import { ApiError, createApiClient, type ApiClient } from "../api/client";
 import type { AttackReport, AttackStatus, GatewayConfig, MockScenario, PDESReport, RunRecord, RunState, RunStatus } from "../api/types";
 import { isAttackScenario, isNetworkScenario } from "../api/types";
 import { NetworkPlayer } from "../components/NetworkPlayer";
+import { PartitionTimingList } from "../components/PartitionTiming";
 import { ProgressBar, StateBadge, TaskGrid } from "../components/RunBits";
 import { EmptyState, LoadingState, Notice, PageHeading, SectionTitle, StatStrip } from "../components/PagePrimitives";
 import { formatDuration } from "../lib/format";
@@ -294,21 +295,7 @@ function PDESLiveView({ api, runId, record, status, state }: {
       {state === "complete" && <div className="complete-banner" role="status"><span><strong>Partitioned run complete.</strong> Merged metrics are ready.</span>
         <a className="banner-action" href={`#/report/${encodeURIComponent(runId)}`}>View report<ArrowRight size={15} /></a></div>}
       <SectionTitle title="Per-partition timing" note="compute versus barrier wait" />
-      <div className="partition-timing-list">
-        {timing.rows.map((row, index) => {
-          const scale = timing.maxTotal || 1;
-          return <div className="partition-timing-row" key={row.id}>
-            <strong>{row.id}</strong>
-            <div className="partition-time-track" aria-label={`${row.id}: ${row.compute.toFixed(3)} seconds compute, ${row.wait.toFixed(3)} seconds wait`}>
-              <span className={`partition-time-compute peer-${index % 6}`} style={{ width: `${(row.compute / scale) * 100}%` }} />
-              <span className="partition-time-wait" style={{ width: `${(row.wait / scale) * 100}%` }} />
-            </div>
-            <span>{row.compute.toFixed(2)}s / {row.wait.toFixed(2)}s</span>
-          </div>;
-        })}
-        {!timing.rows.length && <p className="muted">Partition timing will appear after the first coordination window.</p>}
-        <p className="partition-legend"><i className="partition-time-compute peer-0" /> Compute <i className="partition-time-wait" /> Barrier wait · {timing.totalCompute.toFixed(2)}s total compute / {timing.totalWait.toFixed(2)}s total wait</p>
-      </div>
+      <PartitionTimingList breakdown={timing} legend />
       {scenario && report?.plan && <div className="pdes-topology-preview">
         <SectionTitle title="Partition map" note="cut links connect different owners" />
         <TopologyCanvas scenario={scenario} mode="partition" partitionAssignment={report.plan.assignment} cutLinks={report.plan.cut_links} />
@@ -402,21 +389,7 @@ function AttackLiveView({ api, runId, record, status, state }: {
       {state === "complete" && <div className="complete-banner" role="status"><span><strong>Campaign complete.</strong> Merged campaign samples are ready.</span>
         <a className="banner-action" href={`#/report/${encodeURIComponent(runId)}`}>View report<ArrowRight size={15} /></a></div>}
       <SectionTitle title="Per-partition timing" note="compute versus barrier wait" />
-      <div className="partition-timing-list">
-        {timing.rows.map((row, index) => {
-          const scale = timing.maxTotal || 1;
-          return <div className="partition-timing-row" key={row.id}>
-            <strong>{row.id}</strong>
-            <div className="partition-time-track" aria-label={`${row.id}: ${row.compute.toFixed(3)} seconds compute, ${row.wait.toFixed(3)} seconds wait`}>
-              <span className={`partition-time-compute peer-${index % 6}`} style={{ width: `${(row.compute / scale) * 100}%` }} />
-              <span className="partition-time-wait" style={{ width: `${(row.wait / scale) * 100}%` }} />
-            </div>
-            <span>{row.compute.toFixed(2)}s / {row.wait.toFixed(2)}s</span>
-          </div>;
-        })}
-        {!timing.rows.length && <p className="muted">Partition timing will appear after the first coordination window.</p>}
-        <p className="partition-legend"><i className="partition-time-compute peer-0" /> Compute <i className="partition-time-wait" /> Barrier wait · {timing.totalCompute.toFixed(2)}s total compute / {timing.totalWait.toFixed(2)}s total wait</p>
-      </div>
+      <PartitionTimingList breakdown={timing} legend />
     </section>
   );
 }

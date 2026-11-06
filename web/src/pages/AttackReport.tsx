@@ -1,8 +1,10 @@
-import { Check, CircleX, Copy, Crosshair, TriangleAlert } from "lucide-react";
+import { Check, CircleX, Crosshair, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { AttackReport } from "../api/types";
 import { AttackMap } from "../components/AttackMap";
+import { CopyJsonButton } from "../components/CopyJsonButton";
 import { EmptyState, Notice, PageHeading, SectionTitle, StatStrip } from "../components/PagePrimitives";
+import { PartitionTimingList } from "../components/PartitionTiming";
 import {
   ATTACK_SCENARIOS, attackRunFromMetrics, compact, percent,
   type AttackConfig, type AttackSample,
@@ -42,7 +44,6 @@ function impactValue(report: AttackReport): { label: string; value: string } {
 }
 
 export function AttackReportView({ report, runId }: { report: AttackReport; runId: string }) {
-  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const scenario = ATTACK_SCENARIOS[report.scenario.kind];
   const config = configFor(report);
@@ -61,12 +62,6 @@ export function AttackReportView({ report, runId }: { report: AttackReport; runI
     parts.set(part, [...(parts.get(part) ?? []), node]);
   }
 
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(JSON.stringify(report, null, 2)); setCopied("copied"); }
-    catch { setCopied("failed"); }
-    window.setTimeout(() => setCopied("idle"), 2000);
-  };
-
   return (
     <section className="page-content" aria-labelledby="attack-report-heading">
       <PageHeading
@@ -77,9 +72,7 @@ export function AttackReportView({ report, runId }: { report: AttackReport; runI
         actions={<>
           <a className="ghost-button" href="#/attack"><Crosshair size={15} />Threat lab</a>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}>Progress</a>
-          <button className="ghost-button" type="button" onClick={() => void copy()}>
-            <Copy size={15} />{copied === "copied" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy JSON"}
-          </button>
+          <CopyJsonButton value={report} />
         </>}
       />
 
@@ -120,20 +113,7 @@ export function AttackReportView({ report, runId }: { report: AttackReport; runI
       ]} />
 
       <SectionTitle title="Partition timing breakdown" note={`sum compute / barrier wait: ${breakdown.totalCompute.toFixed(2)} s / ${breakdown.totalWait.toFixed(2)} s`} />
-      <div className="partition-timing-list">
-        {breakdown.rows.map((row, index) => {
-          const scale = breakdown.maxTotal || 1;
-          return <div className="partition-timing-row" key={row.id}>
-            <strong>{row.id}</strong>
-            <div className="partition-time-track" aria-label={`${row.id}: ${row.compute.toFixed(3)} seconds compute, ${row.wait.toFixed(3)} seconds wait`}>
-              <span className={`partition-time-compute peer-${index % 6}`} style={{ width: `${(row.compute / scale) * 100}%` }} />
-              <span className="partition-time-wait" style={{ width: `${(row.wait / scale) * 100}%` }} />
-            </div>
-            <span>{row.compute.toFixed(2)}s / {row.wait.toFixed(2)}s · {row.messages.toLocaleString()} msgs · {(row.bytes / 1024).toFixed(1)} KiB</span>
-          </div>;
-        })}
-        {!breakdown.rows.length && <p className="muted">Partition timing will appear after the first coordination window.</p>}
-      </div>
+      <PartitionTimingList breakdown={breakdown} messagesDetail />
 
       <SectionTitle title="Topology placement" note={`${report.scenario.nodes.length} tokens · ${report.plan.cut_links.length} cut links`} />
       <div className="attack-report-parts">
