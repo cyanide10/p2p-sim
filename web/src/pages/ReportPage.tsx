@@ -1,5 +1,5 @@
 import { Activity, Check, CircleCheck, CircleX, History, RotateCcw, TriangleAlert, Unplug } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ApiError, createApiClient } from "../api/client";
 import type { MetricComparison, MockScenario, NetworkReport, NodeReport, RunRecord, RunReport } from "../api/types";
 import { NetworkReportView } from "./NetworkReport";
@@ -12,15 +12,12 @@ import { EmptyState, LoadingState, Notice, PageHeading, PanelTitle, SectionTitle
 function isNetworkReport(report: RunReport): report is NetworkReport {
   return "kind" in report && report.kind === "network";
 }
-import { formatDuration, formatNumber, formatPercent, formatSpeedup } from "../lib/format";
+import { describeQueueLoad, formatDuration, formatNumber, formatPercent, formatSpeedup } from "../lib/format";
 
 const SMALL_SAMPLE = 30;
 
-function Check2({ ok, yes, no }: { ok: boolean; yes: string; no: string }) {
-  return <span className={`check ${ok ? "check-ok" : "check-bad"}`}>{ok ? <Check size={13} /> : <CircleX size={13} />}{ok ? yes : no}</span>;
-}
-
 function MetricCard({ title, symbol, metric, informational }: { title: string; symbol: string; metric: MetricComparison | null; informational?: boolean }) {
+  const ok = metric ? metric.within_tolerance && metric.theoretical_in_ci : false;
   return (
     <article className="metric-card">
       <header>
@@ -29,18 +26,24 @@ function MetricCard({ title, symbol, metric, informational }: { title: string; s
       {metric ? (
         <>
           <MetricDotWhisker metric={metric} label={title} />
-          <div className="metric-checks">
-            <Check2 ok={metric.within_tolerance} yes="Within tolerance" no="Outside tolerance" />
-            <Check2 ok={metric.theoretical_in_ci} yes="Theory in CI" no="Theory outside CI" />
-          </div>
-          <dl className="metric-numbers">
-            <div><dt>Mean</dt><dd>{formatNumber(metric.mean)}</dd></div>
-            <div><dt>Theoretical</dt><dd>{formatNumber(metric.theoretical)}</dd></div>
-            <div><dt>95% CI</dt><dd>{formatNumber(metric.ci95_low)} – {formatNumber(metric.ci95_high)}</dd></div>
-            <div><dt>Rel. error</dt><dd>{formatPercent(metric.rel_error_pct)} <small>/ {formatPercent(metric.tolerance_pct, 0)}</small></dd></div>
-            <div><dt>Std. dev.</dt><dd>{formatNumber(metric.stddev)}</dd></div>
-            <div><dt>n</dt><dd>{metric.n}</dd></div>
-          </dl>
+          <p className={`metric-verdict check ${ok ? "check-ok" : "check-bad"}`}>
+            {ok ? <Check size={13} /> : <CircleX size={13} />}
+            <span>
+              {metric.within_tolerance ? "Within tolerance" : "Outside tolerance"}
+              {" · "}
+              {metric.theoretical_in_ci ? "theory in CI" : "theory outside CI"}
+            </span>
+          </p>
+          <details className="metric-details">
+            <summary>All numbers</summary>
+            <dl className="metric-numbers">
+              <div><dt>Mean</dt><dd>{formatNumber(metric.mean)}</dd></div>
+              <div><dt>Theoretical</dt><dd>{formatNumber(metric.theoretical)}</dd></div>
+              <div><dt>95% CI</dt><dd>{formatNumber(metric.ci95_low)} – {formatNumber(metric.ci95_high)}</dd></div>
+              <div><dt>Std. dev.</dt><dd>{formatNumber(metric.stddev)}</dd></div>
+              <div><dt>n</dt><dd>{metric.n}</dd></div>
+            </dl>
+          </details>
         </>
       ) : <p className="metric-empty">Needs at least two completed replications.</p>}
     </article>
@@ -116,6 +119,16 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
   const maxPeer = Math.max(1, ...peerCounts.map(([, count]) => count));
   const totalDone = peerCounts.reduce((sum, [, count]) => sum + count, 0);
   const verdictClass = report.verdict === "PASS" ? "verdict-pass" : report.verdict === "FAIL" ? "verdict-fail" : "verdict-pending";
+  const warnings: ReactNode[] = [];
+  if (report.stale) {
+    warnings.push(<><History size={15} />Stored snapshot: the coordinator is unavailable, so this report may be out of date.</>);
+  }
+  if (report.verdict === "PENDING") {
+    warnings.push(<>The batch is still running. Statistics are provisional.</>);
+  }
+  if (n < SMALL_SAMPLE) {
+    warnings.push(<><TriangleAlert size={15} />Only {n} replications completed. The normal-approximation 95% CI is only reliable for n ≥ {SMALL_SAMPLE}.</>);
+  }
 
   return (
     <section className="page-content" aria-labelledby="report-heading">
@@ -130,9 +143,13 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
         </>}
       />
 
-      {report.stale && <Notice kind="warning" className="stale-notice"><History size={15} />Stored snapshot: the coordinator is unavailable, so this report may be out of date.</Notice>}
-      {report.verdict === "PENDING" && <Notice kind="warning">The batch is still running. Statistics are provisional.</Notice>}
-      {n < SMALL_SAMPLE && <Notice kind="warning"><TriangleAlert size={15} /> Only {n} replications completed. The normal-approximation 95% CI is only reliable for n ≥ {SMALL_SAMPLE}.</Notice>}
+      {warnings.length > 0 && (
+        <Notice kind="warning" className="notice-list-notice">
+          <ul className="notice-list">
+            {warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+          </ul>
+        </Notice>
+      )}
 
       <div className={`verdict-card ${verdictClass}`}>
         <div className="verdict-mark">{report.verdict === "PASS" ? <CircleCheck size={30} /> : report.verdict === "FAIL" ? <CircleX size={30} /> : <Activity size={30} />}</div>
@@ -192,22 +209,32 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
       )}
 
       <SectionTitle title="Parameters" />
+      <p className="params-summary">{describeQueueLoad(report.params.lambda, report.params.mu, report.theoretical.rho)}</p>
       <StatStrip
         variant="meta"
         className="params-strip"
         items={[
-          { label: "λ", value: report.params.lambda },
-          { label: "μ", value: report.params.mu },
-          { label: "ρ", value: formatNumber(report.theoretical.rho, 3) },
           { label: "Simulation time", value: report.params.sim_time },
           { label: "Warmup", value: report.params.warmup_time },
           { label: "Replications", value: report.replications_requested },
           { label: "Base seed", value: report.base_seed },
           { label: "Tolerance", value: formatPercent(report.tolerance_pct, 0) },
-          { label: "Seed scheme", value: report.seed_scheme, wide: true },
-          { label: "CI method", value: report.ci_method, wide: true },
         ]}
       />
+      <details className="params-details">
+        <summary>Raw parameters</summary>
+        <StatStrip
+          variant="meta"
+          className="params-strip"
+          items={[
+            { label: "λ (arrival rate)", value: report.params.lambda },
+            { label: "μ (service rate)", value: report.params.mu },
+            { label: "ρ (utilisation)", value: formatNumber(report.theoretical.rho, 3) },
+            { label: "CI method", value: report.ci_method, wide: true },
+            { label: "Seed scheme", value: report.seed_scheme, wide: true },
+          ]}
+        />
+      </details>
     </section>
   );
 }

@@ -151,6 +151,9 @@ h1 { margin-bottom: 7px; font-family: Georgia, "Times New Roman", serif; font-we
 .notice { margin-bottom: 13px; padding: 11px 13px; border-radius: 4px; font-size: 12px; }
 .notice-error { border: 1px solid color-mix(in srgb, var(--coral) 35%, transparent); color: var(--coral); background: var(--coral-soft); }
 .notice-warning { border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); color: var(--amber); background: var(--amber-soft); }
+.notice-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.notice-list li { display: flex; align-items: flex-start; gap: 7px; }
+.notice-list li svg { flex: 0 0 auto; margin-top: 1px; }
 .loading-state, .empty-state { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--muted); font-size: 12px; }
 .empty-state { border: 1px dashed var(--line); border-radius: 5px; }
 .empty-state strong { color: var(--ink); font-size: 13px; }
@@ -278,6 +281,8 @@ h1 { margin-bottom: 7px; font-family: Georgia, "Times New Roman", serif; font-we
 .stat-strip--meta .stat-wide { flex-basis: 100%; }
 .stat-strip--meta .stat-wide dd { font-size: 11px; font-weight: 500; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
 .params-strip { margin-bottom: 0; }
+.params-summary { margin: 0 0 12px; font-size: 12px; }
+.params-details { margin-top: 10px; }
 .lost-banner { display: flex; gap: 14px; margin-bottom: 16px; padding: 17px 18px; border: 2px solid var(--coral); border-radius: 5px; color: var(--ink); background: var(--coral-soft); }
 .lost-banner > svg { flex: 0 0 auto; color: var(--coral); }
 .lost-banner strong { color: var(--coral); font-size: 14px; }
@@ -356,7 +361,9 @@ h1 { margin-bottom: 7px; font-family: Georgia, "Times New Roman", serif; font-we
 .chart-mean { fill: var(--sky); stroke: var(--paper); stroke-width: 2; }
 .chart-label { fill: var(--muted); font-size: 9px; }
 .chart-label-theory { fill: var(--amber); font-weight: 700; }
-.metric-checks { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.metric-verdict { margin: 0 0 10px; }
+.metric-details summary, .params-details summary { color: var(--muted); font-size: 10px; font-weight: 650; cursor: pointer; }
+.metric-details[open] summary, .params-details[open] summary { margin-bottom: 10px; }
 .check { display: inline-flex; align-items: center; gap: 4px; padding: 4px 7px; border-radius: 3px; font-size: 10px; font-weight: 650; }
 .check-ok { color: var(--forest); background: var(--forest-soft); }
 .check-bad { color: var(--coral); background: var(--coral-soft); }

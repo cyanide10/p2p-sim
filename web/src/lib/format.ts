@@ -22,6 +22,14 @@ export function formatSpeedup(value: number | null | undefined): string {
   return `${value.toFixed(2)}×`;
 }
 
+const compact = (value: number) => Number(value.toFixed(2)).toString();
+
+/** Human-readable M/M/1 load line: arrival rate, service rate and utilisation. */
+export function describeQueueLoad(lambda: number, mu: number, rho: number): string {
+  if (![lambda, mu, rho].every(Number.isFinite)) return "--";
+  return `~${compact(lambda)} requests/s in · service ~${compact(mu)}/s · ~${Math.round(rho * 100)}% loaded`;
+}
+
 /** Parses "#/route/id?key=value" into its parts. */
 export function parseHash(hash: string): { route: string; id: string | null; query: URLSearchParams } {
   const [path, search = ""] = hash.replace(/^#\/?/, "").split("?", 2);
