@@ -36,20 +36,27 @@ export function PageHeading({
   );
 }
 
-/** Standalone section header outside a panel: h2 + muted note. */
+/** Standalone section header outside a panel: h2 + muted note + optional action. */
 export function SectionTitle({
   title,
   note,
+  action,
   className,
 }: {
   title: string;
   note?: ReactNode;
+  /** Right-side control, e.g. a show/hide disclosure button. */
+  action?: ReactNode;
   className?: string;
 }) {
+  const noteNode = note !== undefined
+    && (typeof note === "string" || typeof note === "number" ? <span>{note}</span> : note);
   return (
     <div className={`section-title${className ? ` ${className}` : ""}`}>
       <h2>{title}</h2>
-      {note !== undefined && (typeof note === "string" || typeof note === "number" ? <span>{note}</span> : note)}
+      {action !== undefined
+        ? <div className="section-title-end">{noteNode}{action}</div>
+        : noteNode}
     </div>
   );
 }

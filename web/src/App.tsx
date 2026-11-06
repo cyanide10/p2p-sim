@@ -1,5 +1,5 @@
-import { Activity, CircleHelp, CircleX, Clock3, Network, RadioTower, RefreshCw, Share2, ShieldAlert } from "lucide-react";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { Activity, ChevronDown, CircleHelp, CircleX, Clock3, Network, RadioTower, RefreshCw, Share2, ShieldAlert } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createApiClient } from "./api/client";
 import { MOCK_SCENARIOS, type ClusterSnapshot, type GatewayConfig, type MockScenario, type RunCreated } from "./api/types";
 import { EmptyState, LoadingState, Notice, PageHeading, SectionTitle, StatStrip } from "./components/PagePrimitives";
@@ -31,11 +31,15 @@ function ClusterPage({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [manualState, setManualState] = useState<"idle" | "checking" | "done">("idle");
+  const [matrixOpen, setMatrixOpen] = useState(false);
+  const manualRefresh = useRef(false);
   const client = useMemo(() => createApiClient(scenario), [scenario]);
 
   useEffect(() => {
     let active = true;
     const refresh = async () => {
+      const manual = manualRefresh.current;
       try {
         const [nextConfig, nextSnapshot] = await Promise.all([
           client.getConfig(),
@@ -45,8 +49,16 @@ function ClusterPage({
         setConfig(nextConfig);
         setSnapshot(nextSnapshot);
         setError(null);
+        if (manual) {
+          manualRefresh.current = false;
+          setManualState("done");
+        }
       } catch (cause) {
         if (active) setError(cause instanceof Error ? cause.message : "Unable to load cluster data.");
+        if (manual) {
+          manualRefresh.current = false;
+          setManualState("idle");
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -58,6 +70,14 @@ function ClusterPage({
     };
   }, [client, refreshKey]);
 
+  // "Just checked" is a short-lived acknowledgement of the manual refresh;
+  // the label returns to the 3 sec auto-poll wording afterwards.
+  useEffect(() => {
+    if (manualState !== "done") return;
+    const timer = window.setTimeout(() => setManualState("idle"), 4000);
+    return () => window.clearTimeout(timer);
+  }, [manualState]);
+
   const nodes = snapshot?.nodes ?? [];
   const disagreement = nodes.some((observer) =>
     nodes.some((observed) => {
@@ -66,6 +86,13 @@ function ClusterPage({
     }),
   );
   const lastUpdated = snapshot ? new Date(snapshot.updated_at).toLocaleTimeString() : "--";
+  const healthyCount = nodes.filter((node) => node.healthy).length;
+
+  // A disagreement is the one case where the matrix should not stay hidden:
+  // it is the authoritative view of who sees whom differently.
+  useEffect(() => {
+    if (disagreement) setMatrixOpen(true);
+  }, [disagreement]);
 
   return (
     <section className="page-content" aria-labelledby="cluster-heading">
@@ -83,24 +110,38 @@ function ClusterPage({
               </select>
             </label>
           )}
-          <button className="icon-button" type="button" title="Refresh cluster" aria-label="Refresh cluster" onClick={() => setRefreshKey((value) => value + 1)}>
+          <button
+            className="icon-button"
+            type="button"
+            title="Refresh cluster"
+            aria-label="Refresh cluster"
+            onClick={() => {
+              manualRefresh.current = true;
+              setManualState("checking");
+              setRefreshKey((value) => value + 1);
+            }}
+          >
             <RefreshCw size={17} />
           </button>
         </>}
       />
 
       {error && <Notice kind="error">{error}</Notice>}
-      {disagreement && <Notice kind="warning">Peer views disagree. This may indicate a network partition.</Notice>}
+      {disagreement && <Notice kind="warning">Nodes disagree about each other&rsquo;s health — possible partition.</Notice>}
 
       <StatStrip
         variant="summary"
         live
         items={[
-          { label: "Configured nodes", value: config?.peers.length ?? "--" },
-          { label: "Healthy", value: nodes.filter((node) => node.healthy).length, small: ` / ${nodes.length}` },
+          { label: "Healthy", value: healthyCount, small: ` / ${nodes.length}` },
           { label: "Last updated", value: <><Clock3 size={15} />{lastUpdated}</>, valueClassName: "time-value" },
         ]}
-        extra={<span className={`refresh-state ${loading ? "is-loading" : ""}`}><i />{loading ? "Connecting" : "Auto refresh · 3 sec"}</span>}
+        extra={
+          <span className={`refresh-state ${loading || manualState === "checking" ? "is-loading" : ""} ${manualState === "done" ? "is-checked" : ""}`}>
+            <i />
+            {manualState === "checking" ? "Checking now" : manualState === "done" ? "Just checked" : loading ? "Connecting" : "Auto refresh · 3 sec"}
+          </span>
+        }
       />
 
       {loading && !snapshot ? (
@@ -109,7 +150,7 @@ function ClusterPage({
         <EmptyState icon={<Network size={22} />} title="Cluster data unavailable"><span>Check the gateway connection and try again.</span></EmptyState>
       ) : (
         <>
-          <SectionTitle title="Nodes" note={`${nodes.length} configured`} />
+          <SectionTitle title="Nodes" note={`${config?.peers.length ?? nodes.length} configured`} />
           <div className="node-grid">
             {nodes.map((node) => (
               <article className={`node-row ${node.healthy ? "" : "node-row-down"}`} key={node.id}>
@@ -117,7 +158,7 @@ function ClusterPage({
                   <span className={`health-dot ${node.healthy ? "healthy" : "unhealthy"}`} aria-hidden="true" />
                   <div><strong>{node.id}</strong><span>{node.url}</span></div>
                 </div>
-                <div className="node-observer">{node.observer_id === node.id ? <span className="self-marker">SELF</span> : node.observer_id ? `Seen by ${node.observer_id}` : <span className="muted">No observer</span>}</div>
+                <div className="node-observer">{node.observer_id === node.id ? <span className="self-marker">SELF</span> : node.observer_id ? <span className="muted">Observed by {node.observer_id}</span> : <span className="muted">No observer</span>}</div>
                 <div className="node-latency">{node.latency_ms === null ? "--" : `${node.latency_ms} ms`}</div>
                 <div className={`health-label ${node.healthy ? "text-healthy" : "text-unhealthy"}`}>
                   {node.healthy ? <Activity size={15} /> : <CircleX size={15} />}
@@ -128,8 +169,24 @@ function ClusterPage({
             ))}
           </div>
 
-          <SectionTitle className="matrix-title" title="Who sees whom" note={<p>Rows are observers; columns are observed nodes.</p>} />
-          <div className="matrix-frame">
+          <SectionTitle
+            className="matrix-title"
+            title="Who sees whom"
+            note={<p>Rows are observers; columns are the observed nodes.</p>}
+            action={
+              <button
+                className="disclosure-toggle"
+                type="button"
+                aria-expanded={matrixOpen}
+                aria-controls="peer-health-matrix"
+                onClick={() => setMatrixOpen((open) => !open)}
+              >
+                {matrixOpen ? "Hide matrix" : "Show matrix"}
+                <ChevronDown size={14} className={matrixOpen ? "is-open" : ""} />
+              </button>
+            }
+          />
+          <div className="matrix-frame" id="peer-health-matrix" hidden={!matrixOpen}>
             <table className="peer-matrix">
               <caption className="sr-only">Peer health observations by node</caption>
               <thead><tr><th scope="col">Observer</th>{nodes.map((node) => <th scope="col" key={node.id}>{node.id}</th>)}</tr></thead>
