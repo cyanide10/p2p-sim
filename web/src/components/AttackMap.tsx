@@ -1,3 +1,4 @@
+import { useId } from "react";
 import type { AttackKind, AttackNode, AttackPath, AttackRun, AttackSample, NodeState } from "../lib/attack";
 import { MAP_CENTER, VIEW_H, VIEW_W } from "../lib/attack";
 
@@ -128,6 +129,11 @@ function hexPath(size: number): string {
 }
 
 export function AttackMap({ run, sample, clock, selectedId, onSelect }: Props) {
+  const uid = useId().replace(/:/g, "");
+  const bgId = `${uid}-attack-bg`;
+  const gridId = `${uid}-attack-grid`;
+  const glowId = `${uid}-attack-target-glow`;
+  const softGlowId = `${uid}-attack-soft-glow`;
   const { topology, config, scenario, paths } = run;
   const positions = new Map(topology.nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
   const accent = scenario.accent;
@@ -142,28 +148,28 @@ export function AttackMap({ run, sample, clock, selectedId, onSelect }: Props) {
       aria-label={`Network attack map for ${scenario.label}: ${config.scale.toLocaleString()} scale, target ${sample.targetState}`}
       onPointerDown={() => onSelect(null)}>
       <defs>
-        <radialGradient id="attack-bg" cx="50%" cy="47%" r="72%">
+        <radialGradient id={bgId} cx="50%" cy="47%" r="72%">
           <stop offset="0%" stopColor="#0c211a" />
           <stop offset="58%" stopColor="#081610" />
           <stop offset="100%" stopColor="#040c09" />
         </radialGradient>
-        <pattern id="attack-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+        <pattern id={gridId} width="40" height="40" patternUnits="userSpaceOnUse">
           <path d="M 40 0 L 0 0 0 40" fill="none" stroke={COLORS.grid} strokeWidth="1" />
         </pattern>
-        <radialGradient id="attack-target-glow">
+        <radialGradient id={glowId}>
           <stop offset="0%" stopColor={sample.targetState === "secure" ? COLORS.secure : accent} stopOpacity="0.28" />
           <stop offset="100%" stopColor={accent} stopOpacity="0" />
         </radialGradient>
-        <filter id="attack-soft-glow" x="-60%" y="-60%" width="220%" height="220%">
+        <filter id={softGlowId} x="-60%" y="-60%" width="220%" height="220%">
           <feGaussianBlur stdDeviation="4" result="blur" />
           <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
       </defs>
 
-      <rect width={VIEW_W} height={VIEW_H} fill="url(#attack-bg)" />
-      <rect width={VIEW_W} height={VIEW_H} fill="url(#attack-grid)" opacity="0.55" />
+      <rect width={VIEW_W} height={VIEW_H} fill={`url(#${bgId})`} />
+      <rect width={VIEW_W} height={VIEW_H} fill={`url(#${gridId})`} opacity="0.55" />
 
-      <circle cx={MAP_CENTER.x} cy={MAP_CENTER.y} r="330" fill="url(#attack-target-glow)" opacity={0.4 + sample.threat / 180} />
+      <circle cx={MAP_CENTER.x} cy={MAP_CENTER.y} r="330" fill={`url(#${glowId})`} opacity={0.4 + sample.threat / 180} />
       <circle cx={MAP_CENTER.x} cy={MAP_CENTER.y} r="112" fill="none" stroke={COLORS.ring} strokeDasharray="3 8" />
       <circle cx={MAP_CENTER.x} cy={MAP_CENTER.y} r="212" fill="none" stroke={COLORS.ring} strokeDasharray="3 8" />
       <circle cx={MAP_CENTER.x} cy={MAP_CENTER.y} r="322" fill="none" stroke={COLORS.ring} strokeDasharray="3 8" />
@@ -198,7 +204,7 @@ export function AttackMap({ run, sample, clock, selectedId, onSelect }: Props) {
             <path className="attack-vector-line" d={d} fill="none" stroke={accent} strokeWidth={0.8 + strength * 2.2}
               opacity={0.22 + strength * 0.6} strokeDasharray={config.kind === "exfil" ? "2 9" : "7 9"} strokeLinecap="round" />
             {particle && strength > 0.18 && (
-              <circle cx={particle.x} cy={particle.y} r={1.8 + strength * 2.2} fill={accent} opacity={0.55 + strength * 0.4} filter="url(#attack-soft-glow)" />
+              <circle cx={particle.x} cy={particle.y} r={1.8 + strength * 2.2} fill={accent} opacity={0.55 + strength * 0.4} filter={`url(#${softGlowId})`} />
             )}
           </g>
         );

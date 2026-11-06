@@ -2,9 +2,11 @@ import {
   Activity, Bug, CircleCheck, CloudLightning, Cpu, Crosshair, Database, Globe2,
   Layers, LoaderCircle, Pause, Play, RotateCcw, Server, Shield, ShieldAlert, TriangleAlert, X,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { ApiError, createApiClient } from "../api/client";
+import { AxisFrame } from "../components/charts/AxisFrame";
 import { PageHeading, StatStrip } from "../components/PagePrimitives";
+import { seriesSummary } from "../lib/chart";
 import type { AttackReport, AttackStatus, MockScenario, PartitionPlan, RunCreated } from "../api/types";
 import { AttackMap } from "../components/AttackMap";
 import {
@@ -71,121 +73,72 @@ function latencyText(ms: number): { value: string; unit: string } {
   return { value: Math.round(ms).toLocaleString(), unit: "ms" };
 }
 
-function AttackLoadChart({ run, clock, onSeek }: { run: AttackRun; clock: number; onSeek: (t: number) => void }) {
+function AttackChart({ run, clock, onSeek, variant }: {
+  run: AttackRun; clock: number; onSeek: (t: number) => void; variant: "load" | "impact";
+}) {
   const width = 560;
   const height = 190;
   const pad = { top: 18, right: 18, bottom: 28, left: 38 };
-  const data = useMemo(() => {
-    const max = Math.max(run.config.capacity, ...run.samples.map((sample) => sample.attackLoad + sample.legitLoad)) * 1.08;
-    const innerW = width - pad.left - pad.right;
-    const innerH = height - pad.top - pad.bottom;
-    const x = (t: number) => pad.left + (t / run.config.duration) * innerW;
-    const y = (value: number) => pad.top + innerH - (value / max) * innerH;
-    const attack = run.samples.map((sample) => `${x(sample.t).toFixed(2)},${y(sample.attackLoad).toFixed(2)}`).join(" ");
-    const legit = run.samples.map((sample) => `${x(sample.t).toFixed(2)},${y(sample.legitLoad).toFixed(2)}`).join(" ");
-    const area = `M ${x(0)} ${y(0)} L ${attack.replaceAll(" ", " L ")} L ${x(run.config.duration)} ${y(0)} Z`;
-    return { max, innerW, innerH, x, y, attack, legit, area };
-  }, [run]);
-
+  const gradientId = `attack-${useId().replace(/:/g, "")}-${variant}`;
+  const impact = variant === "impact";
+  const yMax = impact ? 100 : Math.max(run.config.capacity, ...run.samples.map((sample) => sample.attackLoad + sample.legitLoad)) * 1.08;
+  const yTicks = impact ? [0, 25, 50, 75, 100] : [0, 0.25, 0.5, 0.75, 1].map((fraction) => fraction * yMax);
   const current = sampleAt(run, clock);
-  const seek = (event: ReactPointerEvent<SVGSVGElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    const viewX = (ratio * width - pad.left) / data.innerW;
-    onSeek(Math.max(0, Math.min(1, viewX)) * run.config.duration);
-  };
+  const summary = impact
+    ? `${seriesSummary("Impact", run.samples.map((sample) => sample.impactPct))} ${seriesSummary("Availability", run.samples.map((sample) => sample.availability))}`
+    : seriesSummary("Attack load", run.samples.map((sample) => sample.attackLoad));
 
   return (
-    <svg className="attack-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Attack load versus target capacity over the campaign"
-      onPointerDown={seek}>
-      <defs>
-        <linearGradient id="attack-area" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={run.scenario.accent} stopOpacity="0.38" />
-          <stop offset="100%" stopColor={run.scenario.accent} stopOpacity="0.02" />
-        </linearGradient>
-      </defs>
-      {[0, 0.25, 0.5, 0.75, 1].map((fraction) => {
-        const value = data.max * fraction;
+    <AxisFrame
+      width={width}
+      height={height}
+      pad={pad}
+      xDomain={[0, run.config.duration]}
+      xTicks={[0, run.config.duration / 2, run.config.duration]}
+      yMax={yMax}
+      yTicks={yTicks}
+      xFormat={(value) => `${Math.round(value)}s`}
+      yFormat={impact ? (value) => `${value}%` : (value) => compact(value)}
+      className="attack-chart"
+      gridClassName="attack-chart-grid"
+      axisClassName="attack-chart-axis"
+      ariaLabel={impact ? `Impact and availability over the campaign. ${summary}` : `Attack load versus target capacity over the campaign. ${summary}`}
+      caption={<text className="attack-chart-axis" x={pad.left} y={12}>{impact ? `${run.scenario.impactLabel} · availability` : `${run.scenario.attackLabel} · ${run.scenario.unit}`}</text>}
+      onSeek={onSeek}
+    >
+      {(geometry) => {
+        const points = (values: number[]) => values.map((value, index) => `${geometry.x(run.samples[index].t).toFixed(2)},${geometry.y(value).toFixed(2)}`).join(" ");
+        const primary = impact ? run.samples.map((sample) => sample.impactPct) : run.samples.map((sample) => sample.attackLoad);
+        const secondary = impact ? run.samples.map((sample) => sample.availability) : run.samples.map((sample) => sample.legitLoad);
+        const baseline = `${geometry.x(0)},${geometry.y(0)}`;
+        const end = `${geometry.x(run.config.duration)},${geometry.y(0)}`;
+        const area = `M ${baseline} L ${points(primary).replaceAll(" ", " L ")} L ${end} Z`;
         return (
-          <g key={fraction}>
-            <line className="attack-chart-grid" x1={pad.left} x2={width - pad.right} y1={data.y(value)} y2={data.y(value)} />
-            <text className="attack-chart-axis" x={pad.left - 7} y={data.y(value) + 3} textAnchor="end">{compact(value)}</text>
-          </g>
+          <>
+            <defs>
+              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={impact ? "#ff5a4e" : run.scenario.accent} stopOpacity={impact ? "0.32" : "0.38"} />
+                <stop offset="100%" stopColor={impact ? "#ff5a4e" : run.scenario.accent} stopOpacity={impact ? "0.01" : "0.02"} />
+              </linearGradient>
+            </defs>
+            <path d={area} fill={`url(#${gradientId})`} />
+            <polyline className="attack-chart-line" points={points(primary)} stroke={impact ? "#ff5a4e" : run.scenario.accent} />
+            <polyline className={`attack-chart-line ${impact ? "attack-chart-availability" : "attack-chart-legit"}`} points={points(secondary)} />
+            {!impact && <>
+              <line className="attack-chart-capacity" x1={geometry.plotLeft} x2={geometry.plotRight} y1={geometry.y(run.config.capacity)} y2={geometry.y(run.config.capacity)} />
+              <text className="attack-chart-capacity-label" x={geometry.plotRight} y={geometry.y(run.config.capacity) - 6} textAnchor="end">capacity</text>
+            </>}
+            {run.events.map((event) => (
+              <line key={`ev-${event.t}-${event.text}`} className={`attack-chart-event event-${event.level}`}
+                x1={geometry.x(event.t)} x2={geometry.x(event.t)} y1={geometry.plotTop} y2={geometry.plotBottom} />
+            ))}
+            <line className="attack-chart-now" x1={geometry.x(clock)} x2={geometry.x(clock)} y1={geometry.plotTop} y2={geometry.plotBottom} />
+            <circle className="attack-chart-dot" cx={geometry.x(clock)} cy={geometry.y(impact ? current.impactPct : current.attackLoad)} r="3.4" fill={impact ? "#ff5a4e" : run.scenario.accent} />
+            {impact && <circle className="attack-chart-dot" cx={geometry.x(clock)} cy={geometry.y(current.availability)} r="2.8" fill="#54d6a4" />}
+          </>
         );
-      })}
-      <path d={data.area} fill="url(#attack-area)" />
-      <polyline className="attack-chart-line" points={data.attack} stroke={run.scenario.accent} />
-      <polyline className="attack-chart-line attack-chart-legit" points={data.legit} />
-      <line className="attack-chart-capacity" x1={pad.left} x2={width - pad.right} y1={data.y(run.config.capacity)} y2={data.y(run.config.capacity)} />
-      <text className="attack-chart-capacity-label" x={width - pad.right} y={data.y(run.config.capacity) - 6} textAnchor="end">capacity</text>
-      {run.events.map((event) => (
-        <line key={`ev-${event.t}-${event.text}`} className={`attack-chart-event event-${event.level}`} x1={data.x(event.t)} x2={data.x(event.t)} y1={pad.top} y2={height - pad.bottom} />
-      ))}
-      <line className="attack-chart-now" x1={data.x(clock)} x2={data.x(clock)} y1={pad.top} y2={height - pad.bottom} />
-      <circle className="attack-chart-dot" cx={data.x(clock)} cy={data.y(current.attackLoad)} r="3.4" fill={run.scenario.accent} />
-      <text className="attack-chart-axis" x={pad.left} y={height - 7}>0s</text>
-      <text className="attack-chart-axis" x={data.x(run.config.duration / 2)} y={height - 7} textAnchor="middle">{Math.round(run.config.duration / 2)}s</text>
-      <text className="attack-chart-axis" x={width - pad.right} y={height - 7} textAnchor="end">{run.config.duration}s</text>
-      <text className="attack-chart-axis" x={pad.left} y={12}>{run.scenario.attackLabel} · {run.scenario.unit}</text>
-    </svg>
-  );
-}
-
-function AttackImpactChart({ run, clock, onSeek }: { run: AttackRun; clock: number; onSeek: (t: number) => void }) {
-  const width = 560;
-  const height = 190;
-  const pad = { top: 18, right: 18, bottom: 28, left: 38 };
-  const data = useMemo(() => {
-    const innerW = width - pad.left - pad.right;
-    const innerH = height - pad.top - pad.bottom;
-    const x = (t: number) => pad.left + (t / run.config.duration) * innerW;
-    const y = (value: number) => pad.top + innerH - (Math.max(0, Math.min(100, value)) / 100) * innerH;
-    const impact = run.samples.map((sample) => `${x(sample.t).toFixed(2)},${y(sample.impactPct).toFixed(2)}`).join(" ");
-    const availability = run.samples.map((sample) => `${x(sample.t).toFixed(2)},${y(sample.availability).toFixed(2)}`).join(" ");
-    const area = `M ${x(0)} ${y(0)} L ${impact.replaceAll(" ", " L ")} L ${x(run.config.duration)} ${y(0)} Z`;
-    return { innerW, innerH, x, y, impact, availability, area };
-  }, [run]);
-
-  const current = sampleAt(run, clock);
-  const seek = (event: ReactPointerEvent<SVGSVGElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    const viewX = (ratio * width - pad.left) / data.innerW;
-    onSeek(Math.max(0, Math.min(1, viewX)) * run.config.duration);
-  };
-
-  return (
-    <svg className="attack-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Impact and availability over the campaign"
-      onPointerDown={seek}>
-      <defs>
-        <linearGradient id="impact-area" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#ff5a4e" stopOpacity="0.32" />
-          <stop offset="100%" stopColor="#ff5a4e" stopOpacity="0.01" />
-        </linearGradient>
-      </defs>
-      {[0, 25, 50, 75, 100].map((value) => (
-        <g key={value}>
-          <line className="attack-chart-grid" x1={pad.left} x2={width - pad.right} y1={data.y(value)} y2={data.y(value)} />
-          <text className="attack-chart-axis" x={pad.left - 7} y={data.y(value) + 3} textAnchor="end">{value}%</text>
-        </g>
-      ))}
-      <path d={data.area} fill="url(#impact-area)" />
-      <polyline className="attack-chart-line" points={data.impact} stroke="#ff5a4e" />
-      <polyline className="attack-chart-line attack-chart-availability" points={data.availability} />
-      <line className="attack-chart-now" x1={data.x(clock)} x2={data.x(clock)} y1={pad.top} y2={height - pad.bottom} />
-      <circle className="attack-chart-dot" cx={data.x(clock)} cy={data.y(current.impactPct)} r="3.4" fill="#ff5a4e" />
-      <circle className="attack-chart-dot" cx={data.x(clock)} cy={data.y(current.availability)} r="2.8" fill="#54d6a4" />
-      <text className="attack-chart-axis" x={pad.left} y={height - 7}>0s</text>
-      <text className="attack-chart-axis" x={data.x(run.config.duration / 2)} y={height - 7} textAnchor="middle">{Math.round(run.config.duration / 2)}s</text>
-      <text className="attack-chart-axis" x={width - pad.right} y={height - 7} textAnchor="end">{run.config.duration}s</text>
-      <text className="attack-chart-axis" x={pad.left} y={12}>{run.scenario.impactLabel} · availability</text>
-      <g className="attack-chart-legend" transform={`translate(${width - pad.right - 130}, 12)`}>
-        <rect x="0" y="-6" width="12" height="2" fill="#ff5a4e" />
-        <text x="17" y="0">impact</text>
-        <rect x="66" y="-6" width="12" height="2" fill="#54d6a4" />
-        <text x="83" y="0">uptime</text>
-      </g>
-    </svg>
+      }}
+    </AxisFrame>
   );
 }
 
@@ -727,7 +680,7 @@ export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario 
                 <span><i className="is-capacity" />capacity</span>
               </div>
             </div>
-            <AttackLoadChart run={run} clock={clock} onSeek={seek} />
+            <AttackChart run={run} clock={clock} onSeek={seek} variant="load" />
           </section>
           <section className="attack-chart-panel">
             <div className="attack-chart-head">
@@ -737,7 +690,7 @@ export function AttackPage({ scenario: mockScenario }: { scenario: MockScenario 
                 <span><i className="is-uptime" />uptime</span>
               </div>
             </div>
-            <AttackImpactChart run={run} clock={clock} onSeek={seek} />
+            <AttackChart run={run} clock={clock} onSeek={seek} variant="impact" />
           </section>
         </div>
 

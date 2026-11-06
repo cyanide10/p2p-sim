@@ -1,12 +1,13 @@
 import { Activity, CircleCheck, CircleX, Network, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import type { ReactNode } from "react";
 import type { ApiClient } from "../api/client";
 import type { Band, Estimate, NetworkReport } from "../api/types";
+import { AxisFrame, type AxisGeometry } from "../components/charts/AxisFrame";
 import { CopyJsonButton } from "../components/CopyJsonButton";
 import { NetworkPlayer } from "../components/NetworkPlayer";
 import { TopologyCanvas } from "../components/TopologyCanvas";
 import { Notice, PageHeading, PanelTitle, SectionTitle, StatStrip } from "../components/PagePrimitives";
-import { niceScale } from "../lib/chart";
+import { linePath, niceScale, seriesSummary, timeTicks } from "../lib/chart";
 import { formatDuration } from "../lib/format";
 import { flowSlot, type Scenario } from "../lib/network";
 
@@ -18,63 +19,69 @@ const pm = (e: Estimate | null | undefined, scale = 1, digits = 2, unit = "") =>
 // ---------------------------------------------------------------------------
 
 const W = 640, H = 240, PAD = { left: 48, right: 14, top: 14, bottom: 28 };
-const plotW = W - PAD.left - PAD.right, plotH = H - PAD.top - PAD.bottom;
 
 interface SeriesDef { name: string; color: string; band: Band }
 
-function BandChart({ series, binWidth, duration, events, unit, scale = 1, label }: {
-  series: SeriesDef[]; binWidth: number; duration: number; events: Scenario["events"]; unit: string; scale?: number; label: string;
+function BandChart({ series, binWidth, duration, events, unit, scale = 1, label, legend }: {
+  series: SeriesDef[]; binWidth: number; duration: number; events: Scenario["events"]; unit: string; scale?: number; label: string; legend?: ReactNode;
 }) {
-  const [hover, setHover] = useState<number | null>(null);
   const bins = Math.max(0, ...series.map((s) => s.band.mean.length));
   const values = series.flatMap((s) => s.band.high.filter((v): v is number => v !== null).map((v) => v * scale));
   const yScale = niceScale(Math.max(0, ...values) || 1);
-  const x = (i: number) => PAD.left + ((i + 0.5) * binWidth / duration) * plotW;
-  const y = (v: number) => PAD.top + plotH - (v * scale / yScale.max) * plotH;
-  const path = (vals: Array<number | null>) => {
-    let d = "";
-    vals.forEach((v, i) => { if (v !== null) d += `${d && vals[i - 1] !== null ? "L" : "M"}${x(i)},${y(v)}`; });
-    return d;
-  };
-  const area = (band: Band) => {
+  const xAt = (i: number) => (i + 0.5) * binWidth;
+  const path = (vals: Array<number | null>, geometry: AxisGeometry) =>
+    linePath(vals.map((v, i) => ({ x: xAt(i), y: v === null ? null : v * scale })), geometry.x, geometry.y);
+  const area = (band: Band, geometry: AxisGeometry) => {
     const idx = band.mean.map((v, i) => (v !== null && band.low[i] !== null && band.high[i] !== null ? i : -1)).filter((i) => i >= 0);
     if (idx.length < 2) return "";
-    return `M${idx.map((i) => `${x(i)},${y(band.high[i]!)}`).join("L")}L${[...idx].reverse().map((i) => `${x(i)},${y(Math.max(0, band.low[i]!))}`).join("L")}Z`;
-  };
-  const ticks: number[] = [];
-  for (let v = 0; v <= yScale.max + 1e-9; v += yScale.step) ticks.push(v);
-  const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    const box = e.currentTarget.getBoundingClientRect();
-    const sx = ((e.clientX - box.left) / box.width) * W;
-    const i = Math.floor(((sx - PAD.left) / plotW) * duration / binWidth);
-    setHover(i >= 0 && i < bins ? i : null);
+    return idx.map((i, index) => `${index === 0 ? "M" : "L"}${geometry.x(xAt(i))},${geometry.y(band.high[i]! * scale)}`).join("")
+      + [...idx].reverse().map((i) => `L${geometry.x(xAt(i))},${geometry.y(Math.max(0, band.low[i]! * scale))}`).join("") + "Z";
   };
   const fmt = (v: number | null) => (v === null ? "--" : (v * scale).toFixed(scale === 1 ? 1 : 0));
+  const summary = series.map((s) => seriesSummary(s.name, s.band.mean.filter((v): v is number => v !== null).map((v) => v * scale))).join(" ");
   return (
-    <svg className="live-chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label} onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
-      <g className="chart-axes">
-        {ticks.map((v) => <g key={v}><line className="chart-grid" x1={PAD.left} x2={W - PAD.right} y1={PAD.top + plotH - (v / yScale.max) * plotH} y2={PAD.top + plotH - (v / yScale.max) * plotH} />
-          <text x={PAD.left - 8} y={PAD.top + plotH - (v / yScale.max) * plotH + 4} textAnchor="end">{Number.isInteger(v) ? v : v.toFixed(1)}</text></g>)}
-        {[0, 0.25, 0.5, 0.75, 1].map((f, i) => <text key={f} x={PAD.left + f * plotW} y={H - 6} textAnchor={i === 0 ? "start" : i === 4 ? "end" : "middle"}>{Math.round(f * duration)}</text>)}
-      </g>
-      {events.map((e, i) => {
-        const ex = PAD.left + (e.t / duration) * plotW;
-        return <g key={i} className="chart-event"><line x1={ex} x2={ex} y1={PAD.top} y2={PAD.top + plotH} /><text x={ex + 4} y={PAD.top + 12 + (i % 3) * 14}>{e.target} {e.action === "down" ? "down" : "up"}</text></g>;
-      })}
-      {series.map((s) => <path key={`${s.name}-band`} d={area(s.band)} style={{ fill: s.color }} className="chart-band-fill" />)}
-      {series.map((s) => <path key={s.name} d={path(s.band.mean)} style={{ stroke: s.color }} className="chart-series" />)}
-      {hover !== null && (
-        <g className="chart-hover">
-          <line x1={x(hover)} x2={x(hover)} y1={PAD.top} y2={PAD.top + plotH} />
-          {series.map((s) => s.band.mean[hover] !== null && <circle key={s.name} cx={x(hover)} cy={y(s.band.mean[hover]!)} r={4} style={{ fill: s.color }} />)}
-          <g transform={`translate(${Math.min(x(hover) + 10, W - PAD.right - 196)}, ${PAD.top + 4})`}>
-            <rect width={196} height={22 + series.length * 17} rx={4} />
-            <text x={9} y={17}>t = {(hover * binWidth).toFixed(0)}–{((hover + 1) * binWidth).toFixed(0)} s</text>
-            {series.map((s, i) => <text key={s.name} x={9} y={34 + i * 17}>{s.name}: {fmt(s.band.mean[hover])} {unit}</text>)}
-          </g>
-        </g>
+    <AxisFrame
+      width={W}
+      height={H}
+      pad={PAD}
+      xDomain={[0, duration]}
+      xTicks={timeTicks(duration)}
+      yMax={yScale.max}
+      yStep={yScale.step}
+      xFormat={(value) => String(Math.round(value))}
+      className="live-chart"
+      ariaLabel={`${label}. ${summary}`}
+      legend={legend}
+      indexCount={bins}
+      indexAtX={(domainX) => {
+        const index = Math.floor(domainX / binWidth);
+        return index >= 0 && index < bins ? index : null;
+      }}
+    >
+      {(geometry, hover) => (
+        <>
+          {events.map((e, i) => (
+            <g key={i} className="chart-event">
+              <line x1={geometry.x(e.t)} x2={geometry.x(e.t)} y1={geometry.plotTop} y2={geometry.plotBottom} />
+              <text x={geometry.x(e.t) + 4} y={geometry.plotTop + 12 + (i % 3) * 14}>{e.target} {e.action === "down" ? "down" : "up"}</text>
+            </g>
+          ))}
+          {series.map((s) => <path key={`${s.name}-band`} d={area(s.band, geometry)} style={{ fill: s.color }} className="chart-band-fill" />)}
+          {series.map((s) => <path key={s.name} d={path(s.band.mean, geometry)} style={{ stroke: s.color }} className="chart-series" />)}
+          {hover !== null && (
+            <g className="chart-hover">
+              <line x1={geometry.x(xAt(hover))} x2={geometry.x(xAt(hover))} y1={geometry.plotTop} y2={geometry.plotBottom} />
+              {series.map((s) => s.band.mean[hover] !== null && <circle key={s.name} cx={geometry.x(xAt(hover))} cy={geometry.y(s.band.mean[hover]! * scale)} r={4} style={{ fill: s.color }} />)}
+              <g transform={`translate(${Math.min(geometry.x(xAt(hover)) + 10, geometry.plotRight - 196)}, ${geometry.plotTop + 4})`}>
+                <rect width={196} height={22 + series.length * 17} rx={4} />
+                <text x={9} y={17}>t = {(hover * binWidth).toFixed(0)}–{((hover + 1) * binWidth).toFixed(0)} s</text>
+                {series.map((s, i) => <text key={s.name} x={9} y={34 + i * 17}>{s.name}: {fmt(s.band.mean[hover])} {unit}</text>)}
+              </g>
+            </g>
+          )}
+        </>
       )}
-    </svg>
+    </AxisFrame>
   );
 }
 
@@ -134,8 +141,8 @@ export function NetworkReportView({ report, runId, api }: { report: NetworkRepor
       <div className="traffic-charts">
         <div className="panel">
           <PanelTitle title="Traffic over time" note="packets/s · line = mean, band = 95% CI" />
-          <ul className="chart-legend"><li><i className="legend-swatch" style={{ background: "var(--flow-0)" }} />Delivered</li><li><i className="legend-swatch" style={{ background: "var(--flow-1)" }} />Dropped</li><li><i className="legend-ref legend-event" />Failure / recovery</li></ul>
           <BandChart label="Delivered and dropped packets per second over simulated time" unit="pkt/s" binWidth={report.series.bin_width} duration={sc.duration} events={sc.events}
+            legend={<ul className="chart-legend"><li><i className="legend-swatch" style={{ background: "var(--flow-0)" }} />Delivered</li><li><i className="legend-swatch" style={{ background: "var(--flow-1)" }} />Dropped</li><li><i className="legend-ref legend-event" />Failure / recovery</li></ul>}
             series={[{ name: "Delivered", color: "var(--flow-0)", band: report.series.delivered_rate }, { name: "Dropped", color: "var(--flow-1)", band: report.series.dropped_rate }]} />
         </div>
         <div className="panel">

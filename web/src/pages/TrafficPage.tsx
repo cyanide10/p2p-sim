@@ -2,7 +2,8 @@ import { Dices, LoaderCircle, Play, Square, TriangleAlert } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient } from "../api/client";
 import { PanelTitle, Notice, PageHeading, StatStrip } from "../components/PagePrimitives";
-import { niceScale } from "../lib/chart";
+import { LineChart } from "../components/charts/LineChart";
+import { lastAtOrBefore, nearestIndex, niceScale, seriesSummary, timeTicks } from "../lib/chart";
 import type { MockScenario } from "../api/types";
 import {
   applyEvents, initialTraffic, pruneLeaving, validateTraffic,
@@ -109,115 +110,99 @@ const RouterStage = memo(function RouterStage({ state, frame, lambda, mu, layout
 // ---------------------------------------------------------------------------
 
 const W = 600, H = 230, PAD = { left: 40, right: 12, top: 12, bottom: 28 };
-const plotW = W - PAD.left - PAD.right, plotH = H - PAD.top - PAD.bottom;
-
-function Axes({ duration, scale }: { duration: number; scale: { max: number; step: number } }) {
-  const yTicks: number[] = [];
-  for (let v = 0; v <= scale.max + 1e-9; v += scale.step) yTicks.push(v);
-  const xTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * duration);
-  const label = (v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(1));
-  return (
-    <g className="chart-axes">
-      {yTicks.map((v) => {
-        const y = PAD.top + plotH - (v / scale.max) * plotH;
-        return <g key={`y${v}`}><line className="chart-grid" x1={PAD.left} x2={W - PAD.right} y1={y} y2={y} /><text x={PAD.left - 8} y={y + 4} textAnchor="end">{label(v)}</text></g>;
-      })}
-      {xTicks.map((v, i) => <text key={`x${v}`} x={PAD.left + (v / duration) * plotW} y={H - 6} textAnchor={i === 0 ? "start" : i === 4 ? "end" : "middle"}>{Math.round(v)}</text>)}
-    </g>
-  );
-}
-
-function useHover() {
-  const [x, setX] = useState<number | null>(null);
-  const onMove = (event: React.PointerEvent<SVGSVGElement>) => {
-    const box = event.currentTarget.getBoundingClientRect();
-    const sx = ((event.clientX - box.left) / box.width) * W;
-    setX(sx >= PAD.left && sx <= W - PAD.right ? sx : null);
-  };
-  return { x, onMove, onLeave: () => setX(null) };
-}
-
-/** Index of the last point with t <= target (points sorted by t). */
-function lastAtOrBefore<T extends { t: number }>(points: T[], target: number): number {
-  let lo = 0, hi = points.length - 1, found = -1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (points[mid].t <= target) { found = mid; lo = mid + 1; } else hi = mid - 1;
-  }
-  return found;
-}
+const plotW = W - PAD.left - PAD.right;
 
 const InSystemChart = memo(function InSystemChart({ points, duration, theoryL }: { points: Point[]; duration: number; theoryL: number | null }) {
-  const hover = useHover();
   const scale = niceScale(Math.max(5, ...points.map((p) => p.v), theoryL ? theoryL * 1.5 : 0));
-  const sx = (t: number) => PAD.left + (t / duration) * plotW;
-  const sy = (v: number) => PAD.top + plotH - (v / scale.max) * plotH;
-  let d = "";
-  points.forEach((p, i) => { d += i === 0 ? `M${sx(p.t)},${sy(p.v)}` : `H${sx(p.t)}V${sy(p.v)}`; });
-  const hoverT = hover.x === null ? null : ((hover.x - PAD.left) / plotW) * duration;
-  const idx = hoverT === null ? -1 : lastAtOrBefore(points, hoverT);
-  const last = points[points.length - 1];
+  const summary = seriesSummary("Packets in system", points.map((point) => point.v));
   return (
-    <svg className="live-chart" viewBox={`0 0 ${W} ${H}`} onPointerMove={hover.onMove} onPointerLeave={hover.onLeave}
-      role="img" aria-label={`Packets in system over time; currently ${last?.v ?? 0}${theoryL ? `, theory average ${theoryL}` : ""}`}>
-      <Axes duration={duration} scale={scale} />
-      {theoryL !== null && <>
-        <line className="chart-ref" x1={PAD.left} x2={W - PAD.right} y1={sy(theoryL)} y2={sy(theoryL)} />
-        <text className="chart-ref-label" x={W - PAD.right - 4} y={sy(theoryL) - 5} textAnchor="end">theory L = {theoryL.toFixed(2)}</text>
-      </>}
-      {d && <path className="chart-step" d={d} />}
-      {hoverT !== null && idx >= 0 && hoverT <= (last?.t ?? 0) && (
-        <g className="chart-hover">
-          <line x1={hover.x!} x2={hover.x!} y1={PAD.top} y2={PAD.top + plotH} />
-          <circle cx={hover.x!} cy={sy(points[idx].v)} r={4} />
-          <g transform={`translate(${Math.min(hover.x! + 10, W - PAD.right - 132)}, ${PAD.top + 4})`}>
-            <rect width={132} height={42} rx={4} />
-            <text x={9} y={17}>t = {hoverT.toFixed(1)}</text>
-            <text x={9} y={34}>{points[idx].v} in system</text>
-          </g>
-        </g>
-      )}
-    </svg>
+    <LineChart
+      width={W}
+      height={H}
+      pad={PAD}
+      xDomain={[0, duration]}
+      xTicks={timeTicks(duration)}
+      yMax={scale.max}
+      yStep={scale.step}
+      className="live-chart"
+      ariaLabel={`${summary}${theoryL ? ` Theory average ${theoryL}.` : ""}`}
+      indexCount={points.length}
+      indexAtX={(domainX) => lastAtOrBefore(points, domainX)}
+      series={[{ points: points.map((point) => ({ x: point.t, y: point.v })), className: "chart-step", step: true }]}
+      overlay={(geometry, hoverIndex) => {
+        const hovered = hoverIndex === null ? null : points[hoverIndex] ?? null;
+        return (
+          <>
+            {theoryL !== null && <>
+              <line className="chart-ref" x1={geometry.plotLeft} x2={geometry.plotRight} y1={geometry.y(theoryL)} y2={geometry.y(theoryL)} />
+              <text className="chart-ref-label" x={geometry.plotRight - 4} y={geometry.y(theoryL) - 5} textAnchor="end">theory L = {theoryL.toFixed(2)}</text>
+            </>}
+            {hovered && (
+              <g className="chart-hover">
+                <line x1={geometry.x(hovered.t)} x2={geometry.x(hovered.t)} y1={geometry.plotTop} y2={geometry.plotBottom} />
+                <circle cx={geometry.x(hovered.t)} cy={geometry.y(hovered.v)} r={4} />
+                <g transform={`translate(${Math.min(geometry.x(hovered.t) + 10, geometry.plotRight - 132)}, ${geometry.plotTop + 4})`}>
+                  <rect width={132} height={42} rx={4} />
+                  <text x={9} y={17}>t = {hovered.t.toFixed(1)}</text>
+                  <text x={9} y={34}>{hovered.v} in system</text>
+                </g>
+              </g>
+            )}
+          </>
+        );
+      }}
+    />
   );
 });
 
 const DelayChart = memo(function DelayChart({ delays, mean, duration, theoryW }: { delays: DelayPoint[]; mean: Point[]; duration: number; theoryW: number | null }) {
-  const hover = useHover();
   const scale = niceScale(Math.max(theoryW ? theoryW * 1.5 : 5, ...delays.map((p) => p.delay)));
-  const sx = (t: number) => PAD.left + (t / duration) * plotW;
-  const sy = (v: number) => PAD.top + plotH - (v / scale.max) * plotH;
-  const r = 3;
-  const dots = delays.map((p) => `M${sx(p.t) - r},${sy(p.delay)}a${r},${r} 0 1,0 ${2 * r},0a${r},${r} 0 1,0 ${-2 * r},0`).join("");
-  const meanPath = mean.map((p, i) => `${i ? "L" : "M"}${sx(p.t)},${sy(p.v)}`).join("");
-  const hoverT = hover.x === null ? null : ((hover.x - PAD.left) / plotW) * duration;
-  let nearest: DelayPoint | null = null;
-  if (hoverT !== null && delays.length) {
-    const i = lastAtOrBefore(delays, hoverT);
-    const candidates = [delays[i], delays[i + 1]].filter(Boolean);
-    nearest = candidates.sort((a, b) => Math.abs(a.t - hoverT) - Math.abs(b.t - hoverT))[0] ?? null;
-    if (nearest && Math.abs(sx(nearest.t) - hover.x!) > 14) nearest = null;
-  }
+  const summary = seriesSummary("Packet delay", delays.map((point) => point.delay), (value) => value.toFixed(2));
   return (
-    <svg className="live-chart" viewBox={`0 0 ${W} ${H}`} onPointerMove={hover.onMove} onPointerLeave={hover.onLeave}
-      role="img" aria-label={`Delay of ${delays.length} delivered packets${mean.length ? `; running mean ${mean[mean.length - 1].v.toFixed(2)}` : ""}${theoryW ? `, theory ${theoryW}` : ""}`}>
-      <Axes duration={duration} scale={scale} />
-      {theoryW !== null && <>
-        <line className="chart-ref" x1={PAD.left} x2={W - PAD.right} y1={sy(theoryW)} y2={sy(theoryW)} />
-        <text className="chart-ref-label" x={W - PAD.right - 4} y={sy(theoryW) - 5} textAnchor="end">theory W = {theoryW.toFixed(2)}</text>
-      </>}
-      {dots && <path className="chart-dots" d={dots} />}
-      {meanPath && <path className="chart-mean-line" d={meanPath} />}
-      {nearest && (
-        <g className="chart-hover">
-          <circle cx={sx(nearest.t)} cy={sy(nearest.delay)} r={6} />
-          <g transform={`translate(${Math.min(sx(nearest.t) + 12, W - PAD.right - 172)}, ${PAD.top + 4})`}>
-            <rect width={172} height={42} rx={4} />
-            <text x={9} y={17}>Packet #{nearest.id}</text>
-            <text x={9} y={34}>delay {nearest.delay.toFixed(2)} · t {nearest.t.toFixed(1)}</text>
-          </g>
-        </g>
-      )}
-    </svg>
+    <LineChart
+      width={W}
+      height={H}
+      pad={PAD}
+      xDomain={[0, duration]}
+      xTicks={timeTicks(duration)}
+      yMax={scale.max}
+      yStep={scale.step}
+      className="live-chart"
+      ariaLabel={`${summary}${mean.length ? ` Running mean ${mean[mean.length - 1].v.toFixed(2)}.` : ""}${theoryW ? ` Theory ${theoryW}.` : ""}`}
+      indexCount={delays.length}
+      indexAtX={(domainX, pixelX) => {
+        if (!delays.length) return null;
+        const index = nearestIndex(delays, domainX);
+        if (index < 0) return null;
+        const pointX = PAD.left + (delays[index].t / duration) * plotW;
+        return Math.abs(pointX - pixelX) > 14 ? null : index;
+      }}
+      series={[{ points: mean.map((point) => ({ x: point.t, y: point.v })), className: "chart-mean-line" }]}
+      overlay={(geometry, hoverIndex) => {
+        const r = 3;
+        const dots = delays.map((point) => `M${geometry.x(point.t) - r},${geometry.y(point.delay)}a${r},${r} 0 1,0 ${2 * r},0a${r},${r} 0 1,0 ${-2 * r},0`).join("");
+        const nearest = hoverIndex === null ? null : delays[hoverIndex] ?? null;
+        return (
+          <>
+            {theoryW !== null && <>
+              <line className="chart-ref" x1={geometry.plotLeft} x2={geometry.plotRight} y1={geometry.y(theoryW)} y2={geometry.y(theoryW)} />
+              <text className="chart-ref-label" x={geometry.plotRight - 4} y={geometry.y(theoryW) - 5} textAnchor="end">theory W = {theoryW.toFixed(2)}</text>
+            </>}
+            {dots && <path className="chart-dots" d={dots} />}
+            {nearest && (
+              <g className="chart-hover">
+                <circle cx={geometry.x(nearest.t)} cy={geometry.y(nearest.delay)} r={6} />
+                <g transform={`translate(${Math.min(geometry.x(nearest.t) + 12, geometry.plotRight - 172)}, ${geometry.plotTop + 4})`}>
+                  <rect width={172} height={42} rx={4} />
+                  <text x={9} y={17}>Packet #{nearest.id}</text>
+                  <text x={9} y={34}>delay {nearest.delay.toFixed(2)} · t {nearest.t.toFixed(1)}</text>
+                </g>
+              </g>
+            )}
+          </>
+        );
+      }}
+    />
   );
 });
 
