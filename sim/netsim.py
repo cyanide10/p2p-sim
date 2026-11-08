@@ -76,6 +76,7 @@ class ArrivalRecord:
     target: str
     start: float
     arrive: float
+    hops: int = 0  # links crossed so far, so the hop limit holds across partitions
 
     def as_dict(self) -> dict:
         return {
@@ -87,6 +88,7 @@ class ArrivalRecord:
             "to": self.target,
             "start": self.start,
             "arrive": self.arrive,
+            "hops": self.hops,
         }
 
     def order_key(self) -> tuple[float, str, str, int]:
@@ -305,6 +307,47 @@ def path_of(sc: dict, table: dict, src: str, dst: str) -> list[str]:
     return path
 
 
+def _cluster_owner(routers: list[str], router_links: list[tuple[str, str, float]], parts: int) -> dict[str, int] | None:
+    """Group routers into `parts` balanced bins that only cut slow links.
+
+    Tries cut thresholds from the slowest link down: links at least as slow as
+    the threshold are removed, the remaining connected groups are packed into
+    bins (largest group first, into the emptiest bin), and the first packing
+    whose largest bin holds at most 1.25x its fair share (or one
+    router over it, for small networks) wins. Returns None when
+    no threshold separates the network into balanced groups.
+    """
+    fair = len(routers) / parts
+    for threshold in sorted({latency for _, _, latency in router_links}, reverse=True):
+        parent = {rid: rid for rid in routers}
+
+        def find(rid: str) -> str:
+            while parent[rid] != rid:
+                parent[rid] = parent[parent[rid]]
+                rid = parent[rid]
+            return rid
+
+        for a, b, latency in router_links:
+            if latency < threshold:
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[max(ra, rb)] = min(ra, rb)
+        groups: dict[str, list[str]] = {}
+        for rid in routers:
+            groups.setdefault(find(rid), []).append(rid)
+        if len(groups) < parts:
+            continue  # a lower threshold keeps fewer links and splits the network further
+        if len(groups) > max(len(routers) // 2, parts * 4):
+            return None  # mostly lone routers: no slow-link clusters, and lower thresholds only split more
+        bins: list[list[str]] = [[] for _ in range(parts)]
+        for group in sorted(groups.values(), key=lambda g: (-len(g), min(g))):
+            target = min(range(parts), key=lambda index: (len(bins[index]), index))
+            bins[target].extend(group)
+        if max(len(b) for b in bins) <= max(math.ceil(fair), math.floor(1.25 * fair)):
+            return {rid: part for part, members in enumerate(bins) for rid in members}
+    return None
+
+
 def partition_plan(sc: dict, parts: int) -> dict:
     """Build a deterministic router partition plan for a normalized scenario."""
     if isinstance(parts, bool) or not isinstance(parts, int) or parts < 1:
@@ -374,21 +417,34 @@ def partition_plan(sc: dict, parts: int) -> dict:
         owner[selected] = part
         regions[part].append(selected)
 
-    assignment = dict(owner)
-    for host, neighbors in attached_hosts.items():
-        assignment[host] = assignment[min(neighbors)[1]] if neighbors else 0
-
-    cut_links = sorted(
-        link["id"] for link in sc["links"].values()
-        if assignment[link["a"]] != assignment[link["b"]]
-    )
-    if cut_links:
-        lookahead = min(
-            1.0 / sc["links"][lid]["bandwidth"] + sc["links"][lid]["delay"]
-            for lid in cut_links
+    def finish(router_owner: dict[str, int]) -> tuple[dict[str, int], list[str], float]:
+        assignment = dict(router_owner)
+        for host, neighbors in attached_hosts.items():
+            assignment[host] = assignment[min(neighbors)[1]] if neighbors else 0
+        cut = sorted(
+            link["id"] for link in sc["links"].values()
+            if assignment[link["a"]] != assignment[link["b"]]
         )
-    else:
-        lookahead = sc["duration"]
+        look = min(
+            (1.0 / sc["links"][lid]["bandwidth"] + sc["links"][lid]["delay"] for lid in cut),
+            default=sc["duration"],
+        )
+        return assignment, cut, look
+
+    assignment, cut_links, lookahead = finish(owner)
+    # A plan that cuts only slow links needs fewer synchronization windows. Use
+    # it when it beats region growing on lookahead.
+    router_links = [
+        (link["a"], link["b"], 1.0 / link["bandwidth"] + link["delay"])
+        for link in sc["links"].values()
+        if sc["nodes"][link["a"]]["kind"] == sc["nodes"][link["b"]]["kind"] == "router"
+    ]
+    clustered = _cluster_owner(routers, sorted(router_links), parts) if parts > 1 else None
+    if clustered is not None:
+        candidate = finish(clustered)
+        if candidate[2] > lookahead:
+            assignment, cut_links, lookahead = candidate
+            regions = [[rid for rid in routers if clustered[rid] == part] for part in range(parts)]
     windows = math.ceil(sc["duration"] / lookahead)
     if windows > 200_000:
         raise ScenarioError(
@@ -532,7 +588,7 @@ class Network:
         self.env.process(self.packet(self.packet_id, self.flow_sequences[fid], flow))
 
     # -- packet life ------------------------------------------------------
-    def _traverse_link(self, pkt: int, seq: int, born: float, flow: dict, source: str):
+    def _traverse_link(self, pkt: int, seq: int, born: float, flow: dict, source: str, hops: int = 0):
         """Transmit one hop and produce its receiver-facing arrival record."""
         env, fid = self.env, flow["id"]
         lid = self.routes[source].get(flow["dst"])
@@ -560,7 +616,7 @@ class Network:
             arrival = ArrivalRecord(
                 flow=fid, seq=seq, born=born,
                 link=lid, source=source, target=target, start=start,
-                arrive=start + tx + link["delay"],
+                arrive=start + tx + link["delay"], hops=hops,
             )
             if cross_partition:
                 self.outbound.append(arrival)
@@ -621,15 +677,14 @@ class Network:
         self._send({"type": "send", "t": round(born, 4), "pkt": pkt, "flow": flow["id"], "at": node})
         yield from self._route_packet(pkt, seq, born, flow, node)
 
-    def _route_packet(self, pkt: int, seq: int, born: float, flow: dict, node: str):
+    def _route_packet(self, pkt: int, seq: int, born: float, flow: dict, node: str, hops: int = 0):
         env, fid, dst = self.env, flow["id"], flow["dst"]
-        hops = 0
         while node != dst:
             hops += 1
             if hops > 64:
                 self._drop(pkt, fid, node, "no_route")
                 return
-            arrival = yield from self._traverse_link(pkt, seq, born, flow, node)
+            arrival = yield from self._traverse_link(pkt, seq, born, flow, node, hops)
             if arrival is None:
                 return
             node = arrival.target
@@ -671,7 +726,7 @@ class Network:
             yield from self._receive_arrival(record.seq, record, flow)
         ):
             return
-        yield from self._route_packet(record.seq, record.seq, record.born, flow, record.target)
+        yield from self._route_packet(record.seq, record.seq, record.born, flow, record.target, record.hops)
 
     # -- failures -----------------------------------------------------------
     def failures(self):
@@ -893,11 +948,14 @@ class PartitionWorker:
             record = ArrivalRecord(
                 flow=raw["flow"], seq=raw["seq"], born=raw["born"], link=raw["link"],
                 source=raw["from"], target=raw["to"], start=raw["start"], arrive=raw["arrive"],
+                hops=raw.get("hops", 0),
             )
         except (KeyError, TypeError) as exc:
             raise ScenarioError("inbound record is missing a required field") from exc
         if not isinstance(record.flow, str) or record.flow not in self.sc["flows"]:
             raise ScenarioError("inbound record has an unknown flow")
+        if isinstance(record.hops, bool) or not isinstance(record.hops, int) or not 0 <= record.hops <= 64:
+            raise ScenarioError("inbound hop count must be an integer from 0 to 64")
         if isinstance(record.seq, bool) or not isinstance(record.seq, int) or record.seq < 1:
             raise ScenarioError("inbound sequence number must be a positive integer")
         times = (record.born, record.start, record.arrive)
@@ -918,7 +976,7 @@ class PartitionWorker:
             raise ScenarioError("inbound record is addressed to a different partition")
         return record
 
-    def step(self, until: Any, inbound: Any) -> dict:
+    def step(self, until: Any, inbound: Any, stats: bool = False) -> dict:
         if self.finished:
             raise ScenarioError("worker is already finished")
         if isinstance(until, bool) or not isinstance(until, (int, float)) or not math.isfinite(until):
@@ -944,11 +1002,33 @@ class PartitionWorker:
         self.env.run(until=float(until))
         compute_s = time.perf_counter() - started
         outbound = sorted(self.network.outbound, key=ArrivalRecord.order_key)
-        return {
+        response = {
             "outbound": [record.as_dict() for record in outbound],
             "compute_s": compute_s,
             "events": self.network.event_count - events_before + len(records),
+            "totals": self._totals(),
         }
+        if stats:
+            response.update(self._load())
+        return response
+
+    def _totals(self) -> dict:
+        """Packets this partition has sent, delivered and dropped so far (they sum across partitions)."""
+        flows = self.network.flow_stats.values()
+        return {key: sum(f[key] for f in flows) for key in ("sent", "delivered", "dropped")}
+
+    def _load(self) -> dict:
+        """Cumulative busy time and current queue of the stations this partition owns, for live load maps."""
+        owner = self.plan["assignment"]
+        links: dict[str, dict] = {}
+        for (lid, endpoint), station in self.network.links.items():
+            if owner[endpoint] == self.part:
+                links.setdefault(lid, {})[endpoint] = {"busy": station.busy, "queue": station.in_system}
+        routers = {
+            rid: {"busy": station.busy, "queue": station.in_system}
+            for rid, station in self.network.routers.items() if owner[rid] == self.part
+        }
+        return {"links": links, "routers": routers}
 
     def finish(self) -> dict:
         if self.finished:
@@ -1110,7 +1190,7 @@ def _partition_protocol() -> int:
             elif op == "step":
                 if worker is None:
                     raise ScenarioError("worker is not open")
-                response = worker.step(request.get("until"), request.get("inbound", []))
+                response = worker.step(request.get("until"), request.get("inbound", []), request.get("stats") is True)
             elif op == "finish":
                 if worker is None:
                     raise ScenarioError("worker is not open")

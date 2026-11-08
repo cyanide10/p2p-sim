@@ -23,7 +23,7 @@ const W = 640, H = 240, PAD = { left: 48, right: 14, top: 14, bottom: 28 };
 
 interface SeriesDef { name: string; color: string; band: Band }
 
-function BandChart({ series, binWidth, duration, events, unit, scale = 1, label, legend }: {
+export function BandChart({ series, binWidth, duration, events, unit, scale = 1, label, legend }: {
   series: SeriesDef[]; binWidth: number; duration: number; events: Scenario["events"]; unit: string; scale?: number; label: string; legend?: ReactNode;
 }) {
   const bins = Math.max(0, ...series.map((s) => s.band.mean.length));

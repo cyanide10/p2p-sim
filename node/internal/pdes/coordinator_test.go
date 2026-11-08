@@ -54,7 +54,16 @@ func (w *coordinatedWorker) Step(_ context.Context, req StepRequest) (StepRespon
 	for _, record := range req.Inbound {
 		w.received <- record
 	}
-	response := StepResponse{Outbound: []ArrivalRecord{}, ComputeS: 0.002, Events: 1}
+	response := StepResponse{Outbound: []ArrivalRecord{}, ComputeS: 0.002, Events: 1,
+		Totals: PacketTotals{Sent: int64(2 * w.steps), Delivered: int64(w.steps)}}
+	if req.Stats {
+		// Each partition owns one station whose busy time grows with every step.
+		if w.part == 0 {
+			response.Links = map[string]map[string]StationLoad{"l1": {"h1": {Busy: 0.25 * float64(w.steps), Queue: 1}}}
+		} else {
+			response.Routers = map[string]StationLoad{"r1": {Busy: 0.1 * float64(w.steps), Queue: 2}}
+		}
+	}
 	if w.part == 0 && w.steps == 1 {
 		response.Outbound = []ArrivalRecord{{
 			Flow: "f", Seq: 3, Born: 0.1, Link: "l1", From: "h1", To: "r1",
@@ -111,6 +120,29 @@ func TestCoordinatorRoutesInboundAndCompletes(t *testing.T) {
 	}
 	if report := run.Report(); string(report.Metrics) != `{"totals":{"delivered":1}}` {
 		t.Fatalf("report = %+v", report)
+	}
+	status := run.Status()
+	if len(status.Participants) != 2 || status.Participants[0] != "self" || status.Participants[1] != "remote" {
+		t.Fatalf("participants = %v; partition 0 must be the coordinator", status.Participants)
+	}
+	if status.Totals != (PacketTotals{Sent: 8, Delivered: 4}) {
+		t.Fatalf("totals = %+v; want the sum of both partitions' last totals", status.Totals)
+	}
+	if status.CutTraffic["l1"] != 1 || status.Partitions["self"].Messages != 1 || status.Partitions["remote"].Messages != 1 {
+		t.Fatalf("cut traffic = %v, partitions = %+v", status.CutTraffic, status.Partitions)
+	}
+	if status.Partitions["self"].Events != 2 {
+		t.Fatalf("events = %d; want one per step", status.Partitions["self"].Events)
+	}
+	// The last window always samples load: over [0.5, 1] the link was busy 0.25 s and the router 0.1 s.
+	if status.Live == nil || status.Live.SimulatedTime != 1 {
+		t.Fatalf("live = %+v", status.Live)
+	}
+	if link := status.Live.Links["l1"]; link.Util != 0.5 || link.Queue != 1 {
+		t.Fatalf("live link = %+v", link)
+	}
+	if router := status.Live.Routers["r1"]; router.Util < 0.199 || router.Util > 0.201 || router.Queue != 2 {
+		t.Fatalf("live router = %+v", router)
 	}
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(299) })
 	handler := NewHandler(localHost, manager, next)

@@ -111,6 +111,7 @@ def test_link_traversal_returns_receiver_arrival_record():
     assert arrival.as_dict() == {
         "flow": "f", "seq": 7, "born": 0.0, "link": "a",
         "from": "h1", "to": "r1", "start": 0.0, "arrive": pytest.approx(0.001),
+        "hops": 0,
     }
     assert arrival.order_key() == (arrival.arrive, "a", "f", 7)
 
@@ -356,3 +357,79 @@ def test_stream_can_start_mid_run():
     assert late[-1]["metrics"] == full[-1]["metrics"]
     with pytest.raises(ScenarioError, match="start"):
         stream_replication(DIAMOND, 8, speed=1.0, emit=lambda e: None, realtime=False, start=1000.0)
+
+
+def _three_sites(wan_delay=0.04):
+    """Three sites of three routers; fast links inside a site, slow WAN links between sites."""
+    nodes, links, flows = [], [], []
+    for site in "abc":
+        for i in range(3):
+            nodes.append({"id": f"{site}r{i}", "kind": "router", "service_rate": 400})
+            nodes.append({"id": f"{site}h{i}", "kind": "host"})
+            links.append({"id": f"{site}e{i}", "a": f"{site}h{i}", "b": f"{site}r{i}", "bandwidth": 1000, "delay": 0.0005})
+        links += [
+            {"id": f"{site}l01", "a": f"{site}r0", "b": f"{site}r1", "bandwidth": 1000, "delay": 0.001},
+            {"id": f"{site}l12", "a": f"{site}r1", "b": f"{site}r2", "bandwidth": 1000, "delay": 0.001},
+        ]
+        flows.append({"id": f"{site}local", "src": f"{site}h0", "dst": f"{site}h2", "rate": 40})
+    # The WAN ring touches each site's r0; the fastest link overall is inside a site.
+    for a, b in (("a", "b"), ("b", "c"), ("c", "a")):
+        links.append({"id": f"wan{a}{b}", "a": f"{a}r0", "b": f"{b}r0", "bandwidth": 1000, "delay": wan_delay})
+        flows.append({"id": f"{a}to{b}", "src": f"{a}h1", "dst": f"{b}h2", "rate": 5})
+    return {"duration": 20, "nodes": nodes, "links": links, "flows": flows,
+            "events": [{"t": 8, "target": "wanab", "action": "down"}, {"t": 12, "target": "wanab", "action": "up"}]}
+
+
+def test_partition_plan_cuts_only_slow_links_between_sites():
+    sc = validate(_three_sites(), partitioned=True)
+    plan = partition_plan(sc, 3)
+    assert plan["cut_links"] == ["wanab", "wanbc", "wanca"]
+    assert plan["lookahead"] == pytest.approx(0.001 + 0.04)
+    assert plan["load"] == [3, 3, 3]
+    for site in "abc":  # each site, hosts included, lives on one partition
+        assert len({plan["assignment"][f"{site}{kind}{i}"] for kind in "rh" for i in range(3)}) == 1
+    assert plan == partition_plan(sc, 3)
+
+
+def test_partition_plan_falls_back_when_clusters_are_unbalanced():
+    scenario = _three_sites()
+    scenario["nodes"] += [{"id": f"ar{i}", "kind": "router"} for i in range(3, 9)]  # site a is now 3x larger
+    scenario["links"] += [{"id": f"al{i}", "a": f"ar{i - 1}", "b": f"ar{i}", "delay": 0.001} for i in range(3, 9)]
+    plan = partition_plan(validate(scenario, partitioned=True), 3)
+    assert max(plan["load"]) <= 6  # region growing splits site a instead of overloading one node
+
+
+def test_partitioned_three_site_run_matches_single_process():
+    scenario = _three_sites()
+    single = run_replication(scenario, 5)["metrics"]
+    assert _partitioned_metrics(scenario, 3, 5) == single
+
+
+def test_partition_step_reports_running_totals_and_owned_load():
+    scenario = _three_sites()
+    sc = validate(scenario, partitioned=True)
+    plan = partition_plan(sc, 3)
+    workers = [PartitionWorker(scenario, plan, part, 3) for part in range(3)]
+    replies = [w.step(5.0, [], stats=part == 0) for part, w in enumerate(workers)]
+    assert all(set(r["totals"]) == {"sent", "delivered", "dropped"} for r in replies)
+    assert sum(r["totals"]["sent"] for r in replies) > 0
+    assert "links" not in replies[1]  # load only when asked
+    owned = {rid for rid, part in plan["assignment"].items() if part == 0}
+    assert set(replies[0]["routers"]) == {rid for rid in owned if sc["nodes"][rid]["kind"] == "router"}
+    for lid, ends in replies[0]["links"].items():
+        assert set(ends) <= owned and all(v["busy"] >= 0 for v in ends.values())
+
+
+def test_hop_limit_carries_across_partitions():
+    """A route longer than the 64-hop limit drops packets the same way however the network is split."""
+    n = 80
+    nodes = [{"id": f"r{i:03d}", "kind": "router", "service_rate": 1000} for i in range(n)]
+    nodes += [{"id": "ha", "kind": "host"}, {"id": "hb", "kind": "host"}]
+    links = [{"id": f"l{i:03d}", "a": f"r{i:03d}", "b": f"r{i + 1:03d}", "bandwidth": 1000, "delay": 0.01} for i in range(n - 1)]
+    links += [{"id": "la", "a": "ha", "b": "r000", "bandwidth": 1000, "delay": 0.001},
+              {"id": "lb", "a": "hb", "b": f"r{n - 1:03d}", "bandwidth": 1000, "delay": 0.001}]
+    scenario = {"duration": 5, "nodes": nodes, "links": links, "events": [],
+                "flows": [{"id": "f", "src": "ha", "dst": "hb", "rate": 5}]}
+    single = _partitioned_metrics(scenario, 1, 1)  # over the 60-node replication limit, so run it as one partition
+    assert single["totals"]["delivered"] == 0  # every packet hits the hop limit
+    assert _partitioned_metrics(scenario, 3, 1) == single

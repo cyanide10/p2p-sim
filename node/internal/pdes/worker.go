@@ -95,9 +95,11 @@ func (w *ProcessWorker) Step(ctx context.Context, req StepRequest) (StepResponse
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	var reply StepResponse
-	if err := w.exchange(ctx, map[string]any{
-		"op": "step", "until": req.Until, "inbound": req.Inbound,
-	}, &reply); err != nil {
+	request := map[string]any{"op": "step", "until": req.Until, "inbound": req.Inbound}
+	if req.Stats {
+		request["stats"] = true
+	}
+	if err := w.exchange(ctx, request, &reply); err != nil {
 		w.stopLocked()
 		return StepResponse{}, err
 	}

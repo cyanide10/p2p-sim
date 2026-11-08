@@ -180,12 +180,12 @@ web/src/style.css                          token block, retire 5 stat-strip vari
 - [x] Attack scenario cards (`:454-472`) use arrow-key movement or a plain `radiogroup` pattern consistent with WAI-ARIA; current `role="radio"` buttons lack tablist semantics.
 - [x] AttackMap nodes are pointer-only (`AttackMap.tsx:220`): add keyboard focus + Enter/Space selection; inspector follows focus.
 - [ ] Audit duplicate text alternatives, `sr-only` labels for the new disclosures, and `aria-live` on StatStrip regions (only where data changes matter — avoid shouting on every poll tick).
-- [ ] Responsive check at 360 px on every page after restructuring (GUI roadmap exit criterion), numbering the fixed offenders.
+- [x] Responsive check at 360 px on every page after restructuring (GUI roadmap exit criterion), numbering the fixed offenders.
 - [ ] `typecheck/test/build` → commit.
 
 ## Task 16: final sweep
 
-- [ ] Grep for leftovers: `ORG`/debug strings, unused lucide icons, unused CSS classes after component extraction, dead props.
+- [x] Grep for leftovers: `ORG`/debug strings, unused lucide icons, unused CSS classes after component extraction, dead props.
 - [x] Update `gui-roadmap.md` cross-reference: note the declutter plan landed, point at this file.
 - [ ] Full run: `npm run typecheck && npm run test && npm run build`, manual pass over every route in mock mode (cluster, network, attack, traffic, launch, live, reports for all run types), plus one gateway-mode smoke test if available.
 - [ ] Commit(s) with a clean final state.
@@ -195,3 +195,16 @@ web/src/style.css                          token block, retire 5 stat-strip vari
 Tasks 1 → 2 → 3 → 4 → 5 are strictly ordered (primitives land before pages consume them). Tasks 6–10 depend on Phase 2 only and may proceed in any order per page. Task 11 (AttackPage restructure) is the biggest risk; it should follow Task 5 and Task 10 so it lands on consolidated components. Tasks 14–15 are sweeps that run after all page work. Task 16 closes.
 
 Non-goal (deliberate): the History page itself. This plan removes its dead nav item; an actual history UI belongs to a later gateway task.
+
+## Follow-up pass (2026-11-08): make the Network lab intuitive
+
+Found by screenshotting every route at 1440 px and 360 px in mock mode. The Network page was 3,864 px tall on desktop and 4,526 px on a phone, because every flow and failure rendered its full editor.
+
+- [x] Flows and failures collapse to one summary line each ("lab → web · steady 12 pkt/s", "70 s · a1c1 · DOWN"); one row opens at a time for editing; failures list in time order. Helpers `flowSummary` and `eventsByTime` in `lib/network.ts`, with tests.
+- [x] Run bar says what each button does: "Watch live" (one copy, streamed) and "Run N copies on all nodes" (averaged), plus the run length, which replaces the separate "Run length" panel.
+- [x] PDES panel runs the network on the canvas ("Split one copy across your nodes", 1. Preview split → 2. Run partitioned). The grid generator moves into its own disclosure with its own length field, so it no longer competes with the main run length, and no longer auto-opens when a plan is previewed.
+- [x] Editor canvas grows to include nodes placed past the 1000×640 drawing area (the bottom row of the ISP sample was clipped); the canvas stays in view while the side panel scrolls on wide screens.
+- [x] Cluster: every node showed "SELF" because each node reports its own health; the badge now appears only when an address answers with a different node ID.
+- [x] Removed dead CSS (`accepted-*`, `back-link`, `net-live-head`, `net-clock*`, `net-stop`, `pdes-generator-primary`, `self-marker`). The Samples dropdown no longer overflows at 360 px.
+- Result: Network page 2,292 px on desktop with a flow and a failure open, 2,831 px at 360 px; no horizontal overflow or console errors on any route at either width.
+

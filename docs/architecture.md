@@ -134,7 +134,14 @@ Deterministic, with no randomness:
 3. Grow regions breadth-first. The smallest region expands next and takes the
    frontier router reached over the lowest-latency link, so high-latency links
    tend to become the cuts.
-4. `lookahead = min over cut links of (1/bandwidth + delay)`. If there are no
+4. Also try **slow-link clusters** (`_cluster_owner`): for thresholds from the
+   slowest router-to-router link down, drop links at least that slow, pack the
+   remaining connected groups into k bins (largest first, emptiest bin), and
+   accept the first packing whose largest bin is at most 1.25x its fair share
+   (or one router over, for small networks). This plan replaces region growing
+   only when its lookahead is larger, so uniform grids are unchanged and
+   multi-site networks get cut exactly on their wide-area links.
+5. `lookahead = min over cut links of (1/bandwidth + delay)`. If there are no
    cuts, it is the full duration. `windows = ceil(duration / lookahead)`.
    Plans needing more than 200,000 windows are rejected.
 
@@ -146,11 +153,12 @@ JSON lines on stdin/stdout:
 | Request | Reply |
 |---|---|
 | `{"op":"open","scenario","plan","part","seed"}` | `{"ok":true}` |
-| `{"op":"step","until":T,"inbound":[records]}` | `{"outbound":[records],"compute_s","events"}` |
+| `{"op":"step","until":T,"inbound":[records],"stats"?:true}` | `{"outbound":[records],"compute_s","events","totals":{sent,delivered,dropped}}`, plus `links` and `routers` (owned stations' cumulative busy time and queue) when `stats` is set |
 | `{"op":"finish"}` | `{"metrics":{…},"state":{…}}`, then the worker exits |
 | any error | `{"error":"…"}` |
 
-`step` validates each inbound record (known flow, endpoints match the link,
+Records carry `hops` (links crossed so far), so the 64-hop limit holds
+across partitions. `step` validates each inbound record (known flow, endpoints match the link,
 `arrive ≥ start + 1/bw + delay`, addressed to this partition, not in the
 past), sorts records by `(arrive, link, flow, seq)`, schedules them with
 `inject_arrival`, then runs `env.run(until=T)`. The safety argument: a record
@@ -258,13 +266,20 @@ the largest of these plus a margin.
    its own partition or to an unknown owner is a protocol error. Each inbound
    list is sorted by `(arrive, link, flow, seq)`. Per-partition accounting:
    `compute_s` (reported by the worker), `wait_s` (slowest reply minus this
-   partition's reply), and messages and bytes (counted at sender and receiver).
+   partition's reply), messages and bytes (counted at sender and receiver),
+   `events`, and the worker's running packet `totals`. Each crossing record
+   also counts toward `cut_traffic[link]`. For network runs, at most every
+   500 ms (and on the last window) the step asks for `stats`, and
+   `Run.updateLive` turns cumulative busy times into each link's and router's
+   utilization since the previous sample (`live`).
 4. `finishWorkers`, then `planner.Merge` (the simulator's `--merge`) produces
    the merged metrics.
 5. If baseline is on: plan k=1, then open, step once to the full duration and
    finish it locally. `compareJSON` checks the canonical JSON and gives
    `results_identical` plus `first_difference` (a JSON path).
-   `speedup = baseline_wall / partitioned_wall`.
+   `speedup = baseline_wall / partitioned_wall`. The run stays `running`
+   (phase `baseline`) until this finishes, so a poll never sees a complete run
+   without its comparison.
 
 **Failure handling:** any open, step or finish error (or timeout) calls
 `fail()`, which sends `DELETE` to every partition that opened, then sets state
@@ -273,6 +288,20 @@ no checkpointing and no automatic restart. The GUI offers "Rerun on surviving
 nodes" (same scenario and seed, k = number of survivors).
 
 **Status phases:** `planning → running → (baseline) → complete | failed`.
+
+Status and report also carry `participants` (node simulating partition i),
+summed `totals` and `cut_traffic`; status adds `live` load while running. The
+GUI's live page draws these on the network map (`components/PartitionMap.tsx`),
+and the report adds charts, tables and a replay of the run's seed.
+
+**When splitting pays off.** Every window costs a round trip from the
+coordinator to every partition, so the work per window decides the speedup.
+Measured on the 3-node Docker cluster (one machine), with identical results
+each time: Regional ISP (4 ms cuts, 69,231 windows, about 0.6 packets per
+window) ran 0.11x; Three-site WAN with 30, 60 and 100 ms WAN links ran 0.82x,
+1.02x and 1.2x (8,572 / 4,616 / 2,858 windows). `lib/pdes.ts` `splitOutlook`
+turns packets per window into the slower / about even / faster hint shown
+after "Preview split". Separate machines add LAN latency to every window.
 
 ---
 
@@ -412,26 +441,19 @@ End-to-end and failure scripts: `scripts/demo.sh`, `scripts/kill-node-test.sh`,
 
 ---
 
-## 12. Known issues (found 2026-11-01, not yet fixed)
+## 12. Known issues
 
-1. **Hop limit resets at partition boundaries.** `_route_packet` drops a
-   packet after 64 hops, but `inject_arrival` restarts the count when a packet
-   enters a new partition (`ArrivalRecord` has no hop field). On paths longer
-   than 64 hops, partitioned runs differ from k=1. Verified: on an 80-router
-   line, k=1 delivered 0 packets and k=3 delivered 85. Fix: carry `hops` in
-   `ArrivalRecord` (Python and Go `types.go`) and continue the count.
-2. **The GUI generator is capped at 60 nodes** (shared `LIMITS.nodes`), but
+Fixed on 2026-11-08: the hop limit restarting at partition boundaries
+(records now carry `hops`; test `test_hop_limit_carries_across_partitions`)
+and the status reading `complete` before the baseline ran.
+
+1. **The GUI generator is capped at 60 nodes** (shared `LIMITS.nodes`), but
    partitioned runs allow 2,000. A PDES-specific limit is needed to generate
    networks large enough to show a speedup.
-3. **The status briefly reads `complete` before the baseline starts.**
-   `execute` sets `state="complete"` after the merge, then switches back to
-   `running` for the baseline. If the gateway polls in that gap, it stores the
-   run without `results_identical` or `speedup`. Fix: don't set `complete`
-   until after the baseline when `Baseline` is true.
-4. **Speedup timing is asymmetric:** the partitioned wall time includes
+2. **Speedup timing is asymmetric:** the partitioned wall time includes
    starting the workers; the baseline wall time excludes its own start. This
    slightly understates the speedup.
-5. The single-queue Live traffic page (`#/traffic`) overlaps with the Network
+3. The single-queue Live traffic page (`#/traffic`) overlaps with the Network
    lab's live view. It is kept for now; removing it is a product decision.
 
 ## 13. Further reading

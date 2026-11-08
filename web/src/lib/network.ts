@@ -86,6 +86,24 @@ export function parseRateSchedule(text: string): Array<{ t: number; rate: number
   ) ? points : null;
 }
 
+/** One-line description of a flow's traffic, for collapsed list rows. */
+export function flowSummary(flow: Flow): string {
+  const fmt = (v: number) => `${Number(v.toFixed(2))}`;
+  switch (flow.pattern.type) {
+    case "schedule":
+      return `${flow.pattern.interpolate === "linear" ? "ramps" : "steps"} up to ${fmt(peakRate(flow))} pkt/s`;
+    case "onoff":
+      return `bursts of ${fmt(flow.rate)} pkt/s (~${fmt(flow.pattern.on_mean)} s on, ${fmt(flow.pattern.off_mean)} s off)`;
+    default:
+      return `steady ${fmt(flow.rate)} pkt/s`;
+  }
+}
+
+/** Failure events with their original indices, in time order (ties keep input order). */
+export function eventsByTime(events: NetEvent[]): Array<{ index: number; event: NetEvent }> {
+  return events.map((event, index) => ({ index, event })).sort((a, b) => a.event.t - b.event.t || a.index - b.index);
+}
+
 export function offeredPackets(sc: Scenario): number {
   return sc.flows.reduce((sum, f) => sum + peakRate(f), 0) * sc.duration;
 }
@@ -286,6 +304,58 @@ const host = (id: string, x: number, y: number): NetNode => ({ id, kind: "host",
 const router = (id: string, x: number, y: number, service_rate = 120, buffer = 50): NetNode => ({ id, kind: "router", x, y, service_rate, buffer });
 const link = (id: string, a: string, b: string, bandwidth = 100, delay = 0.005, buffer = 50): NetLink => ({ id, a, b, bandwidth, delay, buffer });
 
+/**
+ * Three office sites joined by slow wide-area links, with heavy traffic inside
+ * each site. Built for partitioned runs: the planner gives each node one site
+ * and only the WAN links cross between nodes, so every synchronization window
+ * (one WAN latency, 105 ms) holds plenty of local work.
+ */
+function threeSiteWan(): Scenario {
+  const sites = [
+    { id: "hq", x: 130, y: 50 },
+    { id: "north", x: 650, y: 50 },
+    { id: "south", x: 390, y: 380 },
+  ];
+  const nodes: NetNode[] = [], links: NetLink[] = [], flows: Flow[] = [];
+  const pairs: Array<[number, number]> = [[1, 3], [2, 5], [3, 6], [4, 1], [5, 2], [6, 4], [1, 6], [3, 5]];
+  for (const s of sites) {
+    const at = (dx: number, dy: number) => [s.x + dx, s.y + dy] as const;
+    nodes.push(router(`${s.id}-c1`, ...at(0, 0), 500, 80), router(`${s.id}-c2`, ...at(90, 0), 500, 80));
+    links.push(link(`${s.id}-core`, `${s.id}-c1`, `${s.id}-c2`, 1000, 0.0005, 80));
+    const access = [at(-70, 100), at(45, 100), at(160, 100)];
+    access.forEach(([x, y], i) => {
+      const a = `${s.id}-a${i + 1}`;
+      nodes.push(router(a, x, y, 300, 60));
+      links.push(link(`${a}-up1`, a, `${s.id}-c1`, 1000, 0.0005, 60), link(`${a}-up2`, a, `${s.id}-c2`, 1000, 0.0005, 60));
+      for (const j of [0, 1]) {
+        const h = `${s.id}-h${i * 2 + j + 1}`;
+        // Stagger the pair vertically so their labels never collide.
+        nodes.push(host(h, x - 30 + j * 60, y + 75 + j * 40));
+        links.push(link(`${h}-l`, h, a, 500, 0.0005));
+      }
+    });
+    pairs.forEach(([from, to], i) => {
+      const pattern: FlowPattern = i % 4 === 1 ? { type: "onoff", on_mean: 4, off_mean: 2 }
+        : i % 4 === 3 ? { type: "schedule", interpolate: "linear", points: [{ t: 0, rate: 8 }, { t: 150, rate: 16 }, { t: 300, rate: 8 }] }
+        : { type: "constant" };
+      flows.push({ id: `${s.id}-${from}to${to}`, src: `${s.id}-h${from}`, dst: `${s.id}-h${to}`, rate: 16, pattern });
+    });
+  }
+  // WAN: both cores of every site reach the other sites; 100 ms + 5 ms transmission per hop.
+  for (const [a, b] of [["hq", "north"], ["north", "south"], ["south", "hq"]]) {
+    links.push(link(`wan-${a}-${b}-1`, `${a}-c1`, `${b}-c1`, 200, 0.1, 100), link(`wan-${a}-${b}-2`, `${a}-c2`, `${b}-c2`, 200, 0.1, 100));
+    flows.push({ id: `${a}-to-${b}`, src: `${a}-h2`, dst: `${b}-h4`, rate: 8, pattern: { type: "constant" } },
+      { id: `${b}-to-${a}`, src: `${b}-h5`, dst: `${a}-h3`, rate: 8, pattern: { type: "constant" } });
+  }
+  return {
+    duration: 300, nodes, links, flows,
+    events: [
+      { t: 100, target: "wan-hq-north-1", action: "down" }, { t: 160, target: "wan-hq-north-1", action: "up" },
+      { t: 200, target: "north-c1", action: "down" }, { t: 240, target: "north-c1", action: "up" },
+    ],
+  };
+}
+
 export const SAMPLES: Array<{ id: string; label: string; scenario: Scenario }> = [
   {
     id: "dumbbell",
@@ -400,6 +470,7 @@ export const SAMPLES: Array<{ id: string; label: string; scenario: Scenario }> =
       ],
     },
   },
+  { id: "wan", label: "Three-site WAN (fast when split across nodes)", scenario: threeSiteWan() },
 ];
 
 /** The network the lab opens with when nothing is saved. */

@@ -1,99 +1,139 @@
 import { Activity, Check, CircleX, Network, TriangleAlert } from "lucide-react";
+import type { ApiClient } from "../api/client";
+import type { PDESReport } from "../api/types";
 import { CopyJsonButton } from "../components/CopyJsonButton";
-import { ReportHeader } from "../components/ReportHeader";
-import type { PDESMetrics, PDESReport } from "../api/types";
+import { NetworkPlayer } from "../components/NetworkPlayer";
+import { EmptyState, Notice, PanelTitle, SectionTitle, StatStrip } from "../components/PagePrimitives";
+import { PartitionMap } from "../components/PartitionMap";
 import { PartitionTimingList } from "../components/PartitionTiming";
-import { TopologyCanvas } from "../components/TopologyCanvas";
-import { EmptyState, Notice, SectionTitle, StatStrip } from "../components/PagePrimitives";
-import { formatDuration, formatPdesMetricValue, formatSpeedup, pdesMetricLabel } from "../lib/format";
-import { partitionBreakdown } from "../lib/pdes";
+import { ReportHeader } from "../components/ReportHeader";
+import { formatDuration, formatSpeedup } from "../lib/format";
+import { flowSlot } from "../lib/network";
+import { metricsLoad, partitionBreakdown, singleBand } from "../lib/pdes";
+import { BandChart } from "./NetworkReport";
 
-function MetricTable({ title, values }: { title: string; values: Record<string, Record<string, number | null>> }) {
-  const ids = Object.keys(values);
-  const columns = [...new Set(Object.values(values).flatMap((row) => Object.keys(row)))];
-  const confidenceColumns = columns.filter((column) => column.startsWith("ci95_"));
-  const metricColumns = columns.filter((column) => !column.startsWith("ci95_"));
-  const orderedColumns = [...metricColumns, ...confidenceColumns];
-  return (
-    <section className="pdes-metric-section">
-      <SectionTitle title={title} note={`${ids.length} items`} />
-      {!ids.length ? <p className="muted">No merged values.</p> : <div className="table-scroll">
-        <table className="net-table pdes-metric-table">
-          <thead>
-            <tr>
-              <th scope="col" rowSpan={confidenceColumns.length ? 2 : 1}>ID</th>
-              {metricColumns.map((column) => <th scope="col" key={column} rowSpan={confidenceColumns.length ? 2 : 1}>{pdesMetricLabel(column)}</th>)}
-              {confidenceColumns.length > 0 && <th scope="colgroup" colSpan={confidenceColumns.length}>95% confidence interval</th>}
-            </tr>
-            {confidenceColumns.length > 0 && <tr>{confidenceColumns.map((column) => <th scope="col" key={column}>{pdesMetricLabel(column)}</th>)}</tr>}
-          </thead>
-          <tbody>{ids.map((id) => <tr key={id}><th scope="row">{id}</th>{orderedColumns.map((column) => (
-            <td key={column} className={column.startsWith("ci95_") ? "pdes-ci-column" : undefined}>
-              {formatPdesMetricValue(column, values[id][column])}
-            </td>
-          ))}</tr>)}</tbody>
-        </table>
-      </div>}
-    </section>
-  );
-}
+/** A single merged value, scaled and rounded, or a dash when the run produced none. */
+const val = (value: number | null | undefined, scale = 1, digits = 2) =>
+  value === null || value === undefined ? "--" : (value * scale).toFixed(digits);
 
-function MetricSummary({ metrics }: { metrics: PDESMetrics }) {
-  const totals = metrics.totals;
-  return <dl className="pdes-total-grid">
-    {["sent", "delivered", "dropped", "loss_rate", "mean_delay", "throughput"].map((key) => {
-      const value = totals[key];
-      return <div key={key}><dt>{pdesMetricLabel(key)}</dt><dd>{formatPdesMetricValue(key, value)}</dd></div>;
-    })}
-  </dl>;
-}
-
-export function PDESReportView({ report, runId }: { report: PDESReport; runId: string }) {
+export function PDESReportView({ report, runId, api }: { report: PDESReport; runId: string; api: ApiClient }) {
   const breakdown = partitionBreakdown(report.partitions);
   const metrics = report.metrics;
+  const sc = report.scenario;
+  const crossed = Object.values(report.cut_traffic ?? {}).reduce((sum, count) => sum + count, 0);
+  const links = metrics ? [...sc.links].sort((a, b) => (metrics.links[b.id]?.utilization ?? 0) - (metrics.links[a.id]?.utilization ?? 0)) : [];
+  const nodes = report.participants?.length ?? report.plan.parts;
 
   return (
     <section className="page-content" aria-labelledby="pdes-report-heading">
       <ReportHeader
         id="pdes-report-heading"
         eyebrow="PARTITIONED NETWORK REPORT"
-        title="Merged results"
+        title="One copy, split across nodes"
+        ledePrefix={`${nodes} nodes each simulated one region of the network · `}
         batchId={report.batch_id}
         coordinator={report.coordinator}
         seed={report.base_seed}
         actions={<>
           <a className="ghost-button" href="#/network"><Network size={15} />Network lab</a>
           <a className="ghost-button" href={`#/live/${encodeURIComponent(runId)}`}><Activity size={15} />Progress</a>
-          <CopyJsonButton value={report} />
+          <CopyJsonButton value={report} label="Copy as JSON" />
         </>}
       />
       {report.stale && <Notice kind="warning">Stored snapshot: the coordinator is unavailable.</Notice>}
       {report.state === "failed" && <Notice kind="error"><CircleX size={18} /><span><strong>Run failed{report.failed_node ? ` on ${report.failed_node}` : ""}.</strong> {report.error ?? "The coordinator reported a partition failure."}</span></Notice>}
-      {report.results_identical === true && <div className="serial-match serial-ok"><Check size={18} /><span>Serial and partitioned metrics are identical.</span></div>}
-      {report.results_identical === false && <Notice kind="error"><TriangleAlert size={18} /><span><strong>Serial and partitioned results differ.</strong> First differing path: <code>{report.first_difference ?? "unknown"}</code></span></Notice>}
+      {report.results_identical === true && <div className="serial-match serial-ok"><Check size={18} /><span>Identical to running the whole network on one node: the split changed nothing but the time it took.</span></div>}
+      {report.results_identical === false && <Notice kind="error"><TriangleAlert size={18} /><span><strong>The split results differ from the one-node run.</strong> First differing value: <code>{report.first_difference ?? "unknown"}</code></span></Notice>}
 
       <StatStrip variant="pdes" items={[
-        { label: "Partitioned wall time", value: formatDuration(report.partitioned_wall_seconds) },
-        { label: "Serial baseline", value: report.baseline_wall_seconds === undefined ? "Not run" : formatDuration(report.baseline_wall_seconds) },
+        { label: `Split over ${nodes} nodes`, value: formatDuration(report.partitioned_wall_seconds) },
+        { label: "On one node", value: report.baseline_wall_seconds === undefined ? "Not run" : formatDuration(report.baseline_wall_seconds) },
         { label: "Speedup", value: report.speedup === undefined ? "--" : formatSpeedup(report.speedup) },
-        { label: "Lookahead / windows", value: <>{report.plan.lookahead.toPrecision(4)} s · {report.plan.windows.toLocaleString()}</> },
+        { label: "Sync windows", value: <>{report.plan.windows.toLocaleString()} <small>of {(report.plan.lookahead * 1000).toPrecision(3)} ms</small></> },
       ]} />
+      {report.speedup !== undefined && report.speedup < 1 && <Notice kind="info">
+        Splitting was slower here: the nodes synchronized {report.plan.windows.toLocaleString()} times, and each window held little work.
+        Split runs pay off on large networks whose regions are joined by slow links (try the Three-site WAN sample).
+      </Notice>}
 
-      <SectionTitle title="Partition timing breakdown" note={`sum compute / barrier wait: ${breakdown.totalCompute.toFixed(2)} s / ${breakdown.totalWait.toFixed(2)} s`} />
-      <PartitionTimingList breakdown={breakdown} messagesDetail />
+      <SectionTitle title="Who simulated what" note={crossed ? `${crossed.toLocaleString()} packets crossed between nodes` : "average load over the run"} />
+      <PartitionMap scenario={sc} plan={report.plan} participants={report.participants}
+        load={metrics ? metricsLoad(metrics) : undefined} cutTraffic={report.cut_traffic} />
 
-      <SectionTitle title="Partition map" note={`${report.plan.parts} parts · ${report.plan.cut_links.length} cut links`} />
-      <div className="pdes-topology-preview"><TopologyCanvas scenario={report.scenario} mode="partition"
-        partitionAssignment={report.plan.assignment} cutLinks={report.plan.cut_links} /></div>
-      {report.plan.cut_links.length > 0 && <p className="pdes-plan-note">Cut links: {report.plan.cut_links.join(", ")}</p>}
+      <SectionTitle title="Watch the traffic" note="replays this run's seed on one node · same seed, same packets" />
+      <NetworkPlayer api={api} scenario={sc} copies={[{ label: `Seed ${report.base_seed}`, seed: report.base_seed }]} />
 
       {metrics ? <>
-        <SectionTitle title="Aggregate network metrics" note={`merged over ${metrics.duration.toLocaleString()} simulated seconds`} />
-        <MetricSummary metrics={metrics} />
-        <MetricTable title="Flow metrics" values={metrics.flows} />
-        <MetricTable title="Link metrics" values={metrics.links} />
-        <MetricTable title="Router metrics" values={metrics.routers} />
+        <SectionTitle className="net-results-title" title="Results" note={`one run · ${metrics.duration.toLocaleString()} simulated seconds`} />
+        <StatStrip variant="tiles" items={[
+          { label: "Delivered", value: val(metrics.totals.throughput, 1, 1), small: " pkt/s" },
+          { label: "Mean delay", value: val(metrics.totals.mean_delay, 1000, 0), small: " ms" },
+          { label: "Packet loss", value: val(metrics.totals.loss_rate, 100, 2), small: "%" },
+          { label: "Packets sent", value: (metrics.totals.sent ?? 0).toLocaleString() },
+          { label: "Dropped", value: (metrics.totals.dropped ?? 0).toLocaleString() },
+        ]} />
+
+        <div className="traffic-charts">
+          <div className="panel">
+            <PanelTitle title="Traffic over time" note="packets/s" />
+            <BandChart label="Delivered and dropped packets per second over simulated time" unit="pkt/s" binWidth={metrics.series.bin_width} duration={sc.duration} events={sc.events}
+              legend={<ul className="chart-legend"><li><i className="legend-swatch" style={{ background: "var(--flow-0)" }} />Delivered</li><li><i className="legend-swatch" style={{ background: "var(--flow-1)" }} />Dropped</li><li><i className="legend-ref legend-event" />Failure / recovery</li></ul>}
+              series={[{ name: "Delivered", color: "var(--flow-0)", band: singleBand(metrics.series.delivered_rate) }, { name: "Dropped", color: "var(--flow-1)", band: singleBand(metrics.series.dropped_rate) }]} />
+          </div>
+          <div className="panel">
+            <PanelTitle title="Delay over time" note="ms, packets delivered in each interval" />
+            <BandChart label="Mean packet delay over simulated time" unit="ms" scale={1000} binWidth={metrics.series.bin_width} duration={sc.duration} events={sc.events}
+              series={[{ name: "Mean delay", color: "var(--flow-0)", band: singleBand(metrics.series.mean_delay) }]} />
+          </div>
+        </div>
+
+        <SectionTitle title="Flows" note={sc.flows.length} />
+        <div className="matrix-frame table-scroll">
+          <table className="data-table net-report-table">
+            <thead><tr><th scope="col">Flow</th><th scope="col">Route</th><th scope="col">Delivered (pkt/s)</th><th scope="col">Mean delay (ms)</th><th scope="col">p95 delay (ms)</th><th scope="col">Loss (%)</th></tr></thead>
+            <tbody>{sc.flows.map((f, i) => {
+              const m = metrics.flows[f.id] ?? {};
+              return <tr key={f.id}><th scope="row"><i className="flow-swatch" style={{ background: flowSlot(i) }} />{f.id}</th><td>{f.src} → {f.dst}</td>
+                <td>{val(m.throughput)}</td><td>{val(m.mean_delay, 1000, 1)}</td><td>{val(m.p95_delay, 1000, 1)}</td><td>{val(m.loss_rate, 100, 2)}</td></tr>;
+            })}</tbody>
+          </table>
+        </div>
+
+        <details className="pdes-detail-tables">
+          <summary>Every link and router ({sc.links.length} links, {Object.keys(metrics.routers).length} routers)</summary>
+          <div className="report-columns">
+            <div>
+              <SectionTitle title="Links" note="busiest first · dashed on the map = between nodes" />
+              <div className="matrix-frame table-scroll">
+                <table className="data-table net-report-table">
+                  <thead><tr><th scope="col">Link</th><th scope="col">Load (%)</th><th scope="col">Drops</th><th scope="col">Avg queue</th><th scope="col">Crossed nodes</th></tr></thead>
+                  <tbody>{links.map((l) => {
+                    const m = metrics.links[l.id] ?? {};
+                    return <tr key={l.id}><th scope="row">{l.id}<small> {l.a}–{l.b}</small></th><td>{val(m.utilization, 100, 1)}</td><td>{m.drops ?? "--"}</td><td>{val(m.mean_queue)}</td>
+                      <td>{report.cut_traffic?.[l.id] ? report.cut_traffic[l.id].toLocaleString() : ""}</td></tr>;
+                  })}</tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <SectionTitle title="Routers" />
+              <div className="matrix-frame table-scroll">
+                <table className="data-table net-report-table">
+                  <thead><tr><th scope="col">Router</th><th scope="col">Node</th><th scope="col">Load (%)</th><th scope="col">Drops</th><th scope="col">Avg queue</th></tr></thead>
+                  <tbody>{Object.entries(metrics.routers).map(([id, m]) => {
+                    const part = report.plan.assignment[id];
+                    return <tr key={id}><th scope="row">{id}</th><td>{report.participants?.[part] ?? (part === undefined ? "--" : `partition ${part + 1}`)}</td>
+                      <td>{val(m.utilization, 100, 1)}</td><td>{m.drops ?? "--"}</td><td>{val(m.mean_queue)}</td></tr>;
+                  })}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </details>
       </> : <EmptyState icon={<Network size={20} />} title="Metrics are not available"><span>The run failed before the partitions could merge their results.</span></EmptyState>}
+
+      <SectionTitle title="Where the time went" note={`computing ${breakdown.totalCompute.toFixed(2)} s · waiting for other nodes ${breakdown.totalWait.toFixed(2)} s`} />
+      <PartitionTimingList breakdown={breakdown} messagesDetail />
     </section>
   );
 }

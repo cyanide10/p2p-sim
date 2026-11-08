@@ -1,4 +1,4 @@
-import { ArrowLeft, CircleDot, Download, FilePlus2, Link2, LoaderCircle, MousePointer2, Play, Plus, Server, Trash2, TriangleAlert, Upload, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, CircleDot, Download, FilePlus2, Link2, LoaderCircle, MousePointer2, Play, Plus, Server, Trash2, TriangleAlert, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ApiError, createApiClient } from "../api/client";
 import type { MockScenario } from "../api/types";
@@ -10,7 +10,7 @@ import { NetworkPlayer } from "../components/NetworkPlayer";
 import { Notice, PageHeading } from "../components/PagePrimitives";
 import { TopologyCanvas, type Selection, type Tool } from "../components/TopologyCanvas";
 import {
-  checkScenario, cloneScenario, flowSlot, generateGridScenario, nextId, offeredPackets, parseScenario,
+  checkScenario, cloneScenario, eventsByTime, flowSlot, flowSummary, generateGridScenario, nextId, offeredPackets, parseScenario,
   SAMPLES, toWire, type Flow, type FlowPattern, type GridOptions, type Scenario,
 } from "../lib/network";
 import { loadSavedNetwork, saveNetworkScenario } from "../lib/networkStorage";
@@ -40,13 +40,11 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [notice, setNotice] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Flow and failure rows stay collapsed to a one-line summary; one opens at a time for editing.
+  const [openFlow, setOpenFlow] = useState<string | null>(null);
+  const [openEvent, setOpenEvent] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
-  const runInFlight = submitting || planning || partitionPlan !== null || view === "live";
-
-  useEffect(() => {
-    if (runInFlight) setAdvancedOpen(true);
-  }, [runInFlight]);
 
   useEffect(() => {
     saveNetworkScenario(sc);
@@ -125,6 +123,11 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
     if (hosts.length < 2) return setNotice({ kind: "error", text: "Add at least two hosts first." });
     const id = nextId("f", sc.flows.map((f) => f.id));
     update((d) => d.flows.push({ id, src: hosts[0].id, dst: hosts[hosts.length - 1].id, rate: 10, pattern: { type: "constant" } }));
+    setOpenFlow(id);
+  };
+  const addFailure = () => {
+    setOpenEvent(sc.events.length);
+    update((d) => d.events.push({ t: Math.round(d.duration / 3), target: failTargets[0], action: "down" }));
   };
   const setFlow = (id: string, patch: Partial<Flow>) => update((d) => { const f = d.flows.find((x) => x.id === id); if (f) Object.assign(f, patch); });
   const setPattern = (flow: Flow, type: FlowPattern["type"]) => {
@@ -242,8 +245,8 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
 
       <div className="net-runbar">
         <div className="net-run-group">
-          <strong>Run</strong>
-          <label className="net-field"><span>Node</span>
+          <strong>Simulation</strong>
+          <label className="net-field"><span>Run on</span>
             <select
               value={liveNode}
               onChange={(e) => { setLiveNode(e.target.value); setCoordinator(e.target.value); }}
@@ -251,10 +254,19 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
             >
               {pool.map((n) => <option key={n.id} value={n.id} disabled={!n.healthy}>{n.id}{n.healthy ? "" : " · down"}</option>)}
             </select></label>
+          <NumInput label="Length (s)" value={sc.duration} onChange={(v) => update((d) => { d.duration = v; })} disabled={view === "live"} />
+        </div>
+        <div className="net-run-group">
+          <strong>Watch one copy</strong>
+          <button type="button" className="primary-button net-btn" onClick={startLive} disabled={errors.length > 0 || !liveNode || view === "live"}
+            title={`${liveNode || "The node"} simulates the network in real time and streams every packet`}><Play size={14} fill="currentColor" />Watch live</button>
+        </div>
+        <div className="net-run-group">
+          <strong>Average many copies</strong>
           <NumInput label="Copies" value={copies} onChange={(v) => setCopies(Math.round(v))} min={2} step="1" />
-          <button type="button" className="primary-button net-btn" onClick={startLive} disabled={errors.length > 0 || !liveNode || view === "live"}><Play size={14} fill="currentColor" />Run</button>
-          <button type="button" className="ghost-button net-btn" onClick={() => void runCluster()} disabled={errors.length > 0 || submitting || !coordinator}>
-            {submitting ? <LoaderCircle size={14} className="button-spin" /> : <Play size={14} fill="currentColor" />}Run on all nodes
+          <button type="button" className="ghost-button net-btn" onClick={() => void runCluster()} disabled={errors.length > 0 || submitting || !coordinator}
+            title={`${coordinator || "The node"} coordinates; every node runs some of the copies`}>
+            {submitting ? <LoaderCircle size={14} className="button-spin" /> : <Play size={14} fill="currentColor" />}Run {copies} copies on all nodes
           </button>
         </div>
         <p className="net-run-hint">
@@ -316,18 +328,25 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
                   <NumInput label="Delay (ms)" value={Math.round(selLink.delay * 10000) / 10} onChange={(v) => update((d) => { d.links.find((x) => x.id === selLink.id)!.delay = v / 1000; })} step="0.1" />
                   <NumInput label="Buffer (packets)" value={selLink.buffer} min={1} step="1" onChange={(v) => update((d) => { d.links.find((x) => x.id === selLink.id)!.buffer = Math.round(v); })} />
                 </div>}
-                {!selNode && !selLink && <p className="net-help">Select a router or link to edit it. Routers queue packets (finite buffer, drops when full); links have bandwidth, delay and their own buffer.</p>}
+                {!selNode && !selLink && <p className="net-help">Click a router or link on the canvas to edit it.</p>}
                 {selected && <button type="button" className="ghost-button net-remove" onClick={() => remove(selected)}><Trash2 size={14} />Delete {selected.id}</button>}
               </section>
 
               <section className="net-panel" aria-labelledby="flows-heading">
                 <div className="net-panel-head"><h2 id="flows-heading">Flows</h2><button type="button" className="ghost-button" onClick={addFlow}><Plus size={14} />Add flow</button></div>
                 {sc.flows.length === 0 && <p className="net-help">A flow is traffic from one host to another.</p>}
-                {sc.flows.map((f, i) => (
-                  <div className="net-flow" key={f.id}>
-                    <div className="net-flow-head"><i className="flow-swatch" style={{ background: flowSlot(i) }} /><strong>{f.id}</strong>
+                {sc.flows.map((f, i) => {
+                  const open = openFlow === f.id;
+                  return (
+                  <div className={`net-flow ${open ? "is-open" : ""}`} key={f.id}>
+                    <div className="net-flow-head">
+                      <button type="button" className="net-row-toggle" aria-expanded={open} onClick={() => setOpenFlow(open ? null : f.id)}>
+                        <i className="flow-swatch" style={{ background: flowSlot(i) }} />
+                        <span className="net-row-text"><strong>{f.id}</strong><small>{f.src} → {f.dst} · {flowSummary(f)}</small></span>
+                        <ChevronDown size={14} className="net-row-chevron" aria-hidden="true" />
+                      </button>
                       <button type="button" className="icon-button net-x" aria-label={`Remove flow ${f.id}`} onClick={() => update((d) => { d.flows = d.flows.filter((x) => x.id !== f.id); })}><X size={14} /></button></div>
-                    <div className="net-grid">
+                    {open && <div className="net-grid">
                       <label className="net-field"><span>From</span><select value={f.src} onChange={(e) => setFlow(f.id, { src: e.target.value })}>{hosts.map((h) => <option key={h.id}>{h.id}</option>)}</select></label>
                       <label className="net-field"><span>To</span><select value={f.dst} onChange={(e) => setFlow(f.id, { dst: e.target.value })}>{hosts.map((h) => <option key={h.id}>{h.id}</option>)}</select></label>
                       <label className="net-field"><span>Traffic</span><select value={f.pattern.type} onChange={(e) => setPattern(f, e.target.value as FlowPattern["type"])}>
@@ -342,29 +361,39 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
                         <label className="net-field"><span>Between points</span><select value={f.pattern.interpolate} onChange={(e) => setFlow(f.id, { pattern: { ...(f.pattern as Extract<FlowPattern, { type: "schedule" }>), interpolate: e.target.value as "step" | "linear" } })}>
                           <option value="step">Step</option><option value="linear">Ramp</option></select></label>
                       </>}
-                    </div>
+                    </div>}
                   </div>
-                ))}
+                  );
+                })}
               </section>
 
               <section className="net-panel" aria-labelledby="fail-heading">
                 <div className="net-panel-head"><h2 id="fail-heading">Failures</h2>
-                  <button type="button" className="ghost-button" disabled={failTargets.length === 0} onClick={() => update((d) => d.events.push({ t: Math.round(d.duration / 3), target: failTargets[0], action: "down" }))}><Plus size={14} />Add</button></div>
+                  <button type="button" className="ghost-button" disabled={failTargets.length === 0} onClick={addFailure}><Plus size={14} />Add failure</button></div>
                 {sc.events.length === 0 && <p className="net-help">Take a link or router down at a given time, and bring it back later. Traffic is rerouted around it.</p>}
-                {sc.events.map((e, i) => (
-                  <div className="net-grid net-event" key={i}>
-                    <NumInput label="At t (s)" value={e.t} onChange={(v) => update((d) => { d.events[i].t = v; })} />
-                    <label className="net-field"><span>Element</span><select value={e.target} onChange={(ev) => update((d) => { d.events[i].target = ev.target.value; })}>{failTargets.map((t) => <option key={t}>{t}</option>)}</select></label>
-                    <label className="net-field"><span>Goes</span><select value={e.action} onChange={(ev) => update((d) => { d.events[i].action = ev.target.value as "down" | "up"; })}><option value="down">down</option><option value="up">back up</option></select></label>
-                    <button type="button" className="icon-button net-x" aria-label="Remove failure" onClick={() => update((d) => { d.events.splice(i, 1); })}><X size={14} /></button>
+                {eventsByTime(sc.events).map(({ index: i, event: e }) => {
+                  const open = openEvent === i;
+                  return (
+                  <div className={`net-flow net-event-row ${open ? "is-open" : ""}`} key={i}>
+                    <div className="net-flow-head">
+                      <button type="button" className="net-row-toggle" aria-expanded={open} onClick={() => setOpenEvent(open ? null : i)}>
+                        <span className="net-event-time">{e.t} s</span>
+                        <span className="net-row-text"><strong>{e.target}</strong><small>{e.action === "down" ? "goes down" : "comes back up"}</small></span>
+                        <span className={`net-event-badge ${e.action === "down" ? "is-down" : "is-up"}`}>{e.action === "down" ? "down" : "up"}</span>
+                        <ChevronDown size={14} className="net-row-chevron" aria-hidden="true" />
+                      </button>
+                      <button type="button" className="icon-button net-x" aria-label={`Remove failure of ${e.target} at ${e.t} s`} onClick={() => { setOpenEvent(null); update((d) => { d.events.splice(i, 1); }); }}><X size={14} /></button>
+                    </div>
+                    {open && <div className="net-grid net-event">
+                      <NumInput label="At t (s)" value={e.t} onChange={(v) => update((d) => { d.events[i].t = v; })} />
+                      <label className="net-field"><span>Element</span><select value={e.target} onChange={(ev) => update((d) => { d.events[i].target = ev.target.value; })}>{failTargets.map((t) => <option key={t}>{t}</option>)}</select></label>
+                      <label className="net-field"><span>Goes</span><select value={e.action} onChange={(ev) => update((d) => { d.events[i].action = ev.target.value as "down" | "up"; })}><option value="down">down</option><option value="up">back up</option></select></label>
+                    </div>}
                   </div>
-                ))}
+                  );
+                })}
               </section>
 
-              <section className="net-panel" aria-labelledby="settings-heading">
-                <h2 id="settings-heading">Run length</h2>
-                <div className="net-grid"><NumInput label="Simulated duration (s)" value={sc.duration} onChange={(v) => update((d) => { d.duration = v; })} /></div>
-              </section>
             </>
         </aside>
       </div>
@@ -391,6 +420,7 @@ export function NetworkPage({ scenario: mockScenario }: { scenario: MockScenario
         onGenerate={generate}
         onPreview={() => void previewPartitions()}
         onRun={() => void runPDES()}
+        offeredPackets={offeredPackets(sc)}
       />
     </section>
   );

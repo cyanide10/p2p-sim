@@ -99,11 +99,23 @@ export interface NodeStatus {
   tasks?: TaskDetail[];
 }
 
+export interface PacketTotals { sent: number; delivered: number; dropped: number }
+
 export interface PartitionTiming {
   compute_s: number;
   wait_s: number;
   messages: number;
   bytes: number;
+  /** Network PDES only (older nodes omit them). */
+  events?: number;
+  totals?: PacketTotals;
+}
+
+/** Load sampled about twice a second while a partitioned run is in progress. */
+export interface PDESLiveLoad {
+  simulated_time: number;
+  links: Record<string, { util: number; queue: number }>;
+  routers: Record<string, { util: number; queue: number }>;
 }
 
 export interface PDESStatus {
@@ -116,6 +128,11 @@ export interface PDESStatus {
   windows_done: number;
   windows_total: number;
   partitions: Record<string, PartitionTiming>;
+  /** participants[i] simulates partition i of the plan. */
+  participants?: string[];
+  totals?: PacketTotals;
+  cut_traffic?: Record<string, number>;
+  live?: PDESLiveLoad;
   failed_node?: string;
   error?: string;
   stale?: boolean;
@@ -281,6 +298,9 @@ export interface PDESReport {
   partitioned_wall_seconds: number;
   baseline_wall_seconds?: number;
   partitions: Record<string, PartitionTiming>;
+  participants?: string[];
+  totals?: PacketTotals;
+  cut_traffic?: Record<string, number>;
   failed_node?: string;
   error?: string;
   stale?: boolean;

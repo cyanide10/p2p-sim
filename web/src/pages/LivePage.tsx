@@ -4,12 +4,12 @@ import { ApiError, createApiClient, type ApiClient } from "../api/client";
 import type { AttackReport, AttackStatus, GatewayConfig, MockScenario, PDESReport, PDESStatus, RunRecord, RunState, RunStatus } from "../api/types";
 import { isAttackScenario, isNetworkScenario } from "../api/types";
 import { NetworkPlayer } from "../components/NetworkPlayer";
+import { PartitionMap } from "../components/PartitionMap";
 import { PartitionTimingList } from "../components/PartitionTiming";
 import { ProgressBar, StateBadge, TaskGrid } from "../components/RunBits";
 import { EmptyState, LoadingState, Notice, PageHeading, SectionTitle, StatStrip } from "../components/PagePrimitives";
 import { formatDuration } from "../lib/format";
 import { partitionBreakdown } from "../lib/pdes";
-import { TopologyCanvas } from "../components/TopologyCanvas";
 
 const POLL_MS = 500;
 
@@ -226,6 +226,10 @@ function SpecializedLiveView({ kind, api, runId, record, status, state }: {
   const partitionedStatus: PDESStatus | AttackStatus | null =
     status && "kind" in status && status.kind === kind ? status as PDESStatus | AttackStatus : null;
   const timing = partitionBreakdown(partitionedStatus?.partitions ?? report?.partitions ?? {});
+  const pdesStatus = partitionedStatus?.kind === "pdes" ? partitionedStatus : null;
+  const pdesReport = report?.kind === "pdes" ? report : null;
+  const pdesTotals = pdesStatus?.totals ?? pdesReport?.totals;
+  const crossed = Object.values(pdesStatus?.cut_traffic ?? pdesReport?.cut_traffic ?? {}).reduce((sum, count) => sum + count, 0);
   const networkScenario = isNetworkScenario(record.params.scenario) ? record.params.scenario : undefined;
   const attackScenario = isAttackScenario(record.params.scenario) ? record.params.scenario : undefined;
   const duration = kind === "pdes" ? networkScenario?.duration ?? 0 : attackScenario?.duration ?? 0;
@@ -297,6 +301,19 @@ function SpecializedLiveView({ kind, api, runId, record, status, state }: {
           percentageDigits={1}
         />
       </div>
+      {kind === "pdes" && <StatStrip variant="tiles" items={[
+        { label: "Packets sent", value: (pdesTotals?.sent ?? 0).toLocaleString() },
+        { label: "Delivered", value: (pdesTotals?.delivered ?? 0).toLocaleString() },
+        { label: "Dropped", value: (pdesTotals?.dropped ?? 0).toLocaleString() },
+        { label: "Crossed between nodes", value: crossed.toLocaleString(), small: " packets" },
+      ]} />}
+      {kind === "pdes" && networkScenario && pdesReport?.plan && <>
+        <SectionTitle title="Live network" note={pdesStatus?.live
+          ? `load at t = ${pdesStatus.live.simulated_time.toFixed(1)} s · each node simulates its outlined region`
+          : "each node simulates its outlined region · load appears once the run starts"} />
+        <PartitionMap scenario={networkScenario} plan={pdesReport.plan} participants={pdesStatus?.participants ?? pdesReport.participants}
+          load={pdesStatus?.live} cutTraffic={pdesStatus?.cut_traffic ?? pdesReport.cut_traffic} />
+      </>}
       {partitionedStatus?.stale && <Notice kind="warning">Showing the last stored partition snapshot; the coordinator is unavailable.</Notice>}
       {state === "failed" && <Notice kind="error">
         <strong>{kind === "pdes" ? "Partitioned run failed" : "Campaign failed"}{partitionedStatus?.failed_node ? ` on ${partitionedStatus.failed_node}` : ""}.</strong> {partitionedStatus?.error ?? report?.error ?? "The coordinator reported a worker failure."}
@@ -317,10 +334,6 @@ function SpecializedLiveView({ kind, api, runId, record, status, state }: {
         <a className="banner-action" href={`#/report/${encodeURIComponent(runId)}`}>View report<ArrowRight size={15} /></a></div>}
       <SectionTitle title="Per-partition timing" note="compute versus barrier wait" />
       <PartitionTimingList breakdown={timing} legend />
-      {kind === "pdes" && networkScenario && report?.plan && <div className="pdes-topology-preview">
-        <SectionTitle title="Partition map" note="cut links connect different owners" />
-        <TopologyCanvas scenario={networkScenario} mode="partition" partitionAssignment={report.plan.assignment} cutLinks={report.plan.cut_links} />
-      </div>}
     </section>
   );
 }

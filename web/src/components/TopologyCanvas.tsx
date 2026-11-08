@@ -45,7 +45,13 @@ export function TopologyCanvas(props: Props) {
   const editing = mode === "edit";
   // Outside the editor, frame the network itself instead of the whole drawing area.
   let box = { x: 0, y: 0, w: VIEW_W, h: VIEW_H };
-  if (!editing && scenario.nodes.length) {
+  if (editing && scenario.nodes.length) {
+    // Keep the whole drawing area, but grow it so nodes (and their labels) placed near the edge stay visible.
+    const pad = 50;
+    const x0 = Math.min(0, ...scenario.nodes.map((n) => n.x - pad)), y0 = Math.min(0, ...scenario.nodes.map((n) => n.y - pad));
+    const x1 = Math.max(VIEW_W, ...scenario.nodes.map((n) => n.x + pad)), y1 = Math.max(VIEW_H, ...scenario.nodes.map((n) => n.y + pad));
+    box = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  } else if (!editing && scenario.nodes.length) {
     const xs = scenario.nodes.map((n) => n.x), ys = scenario.nodes.map((n) => n.y);
     const pad = 70;
     const x0 = Math.min(...xs) - pad, x1 = Math.max(...xs) + pad, y0 = Math.min(...ys) - pad, y1 = Math.max(...ys) + pad;

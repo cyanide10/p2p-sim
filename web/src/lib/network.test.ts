@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyNetEvents, playbackSpeeds, checkScenario, cloneScenario, generateGridScenario, HOP_MS, initialLive, nextId, offeredPackets, parseRateSchedule, parseScenario, SAMPLES, toWire, type GridOptions, type NetStreamEvent } from "./network";
+import { eventsByTime, flowSummary, applyNetEvents, playbackSpeeds, checkScenario, cloneScenario, generateGridScenario, HOP_MS, initialLive, nextId, offeredPackets, parseRateSchedule, parseScenario, SAMPLES, toWire, type GridOptions, type NetStreamEvent } from "./network";
 
 describe("samples", () => {
   it("are all valid", () => {
@@ -140,5 +140,18 @@ describe("seek and playback speeds", () => {
     expect(playbackSpeeds(sc)).toEqual([0.25, 0.5, 1, 2]);
     sc.flows.forEach((f) => { f.rate = 1000; f.pattern = { type: "constant" }; });
     expect(playbackSpeeds(sc)).toEqual([0.05]);
+  });
+});
+
+describe("collapsed list summaries", () => {
+  it("describes each traffic pattern in one line", () => {
+    expect(flowSummary({ id: "a", src: "h1", dst: "h2", rate: 12, pattern: { type: "constant" } })).toBe("steady 12 pkt/s");
+    expect(flowSummary({ id: "b", src: "h1", dst: "h2", rate: 30, pattern: { type: "schedule", interpolate: "linear", points: [{ t: 0, rate: 4 }, { t: 10, rate: 18 }] } })).toBe("ramps up to 18 pkt/s");
+    expect(flowSummary({ id: "c", src: "h1", dst: "h2", rate: 20, pattern: { type: "onoff", on_mean: 6, off_mean: 4 } })).toBe("bursts of 20 pkt/s (~6 s on, 4 s off)");
+  });
+
+  it("orders failures by time and keeps their original indices", () => {
+    const order = eventsByTime([{ t: 150, target: "c2", action: "down" }, { t: 70, target: "l1", action: "down" }, { t: 70, target: "l2", action: "up" }]);
+    expect(order.map((o) => o.index)).toEqual([1, 2, 0]);
   });
 });

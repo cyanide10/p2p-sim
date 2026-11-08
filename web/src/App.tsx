@@ -158,7 +158,8 @@ function ClusterPage({
                   <span className={`health-dot ${node.healthy ? "healthy" : "unhealthy"}`} aria-hidden="true" />
                   <div><strong>{node.id}</strong><span>{node.url}</span></div>
                 </div>
-                <div className="node-observer">{node.observer_id === node.id ? <span className="self-marker">SELF</span> : node.observer_id ? <span className="muted">Observed by {node.observer_id}</span> : <span className="muted">No observer</span>}</div>
+                {/* Each node reports its own health, so only a mismatched identity is worth showing. */}
+                <div className="node-observer">{node.observer_id && node.observer_id !== node.id ? <span className="muted" title="This address answered with a different node ID; check peers.yaml">Answers as {node.observer_id}</span> : null}</div>
                 <div className="node-latency">{node.latency_ms === null ? "--" : `${node.latency_ms} ms`}</div>
                 <div className={`health-label ${node.healthy ? "text-healthy" : "text-unhealthy"}`}>
                   {node.healthy ? <Activity size={15} /> : <CircleX size={15} />}

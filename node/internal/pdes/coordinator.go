@@ -33,11 +33,29 @@ type HealthChecker interface {
 }
 
 type PartitionTiming struct {
-	ComputeS float64 `json:"compute_s"`
-	WaitS    float64 `json:"wait_s"`
-	Messages int64   `json:"messages"`
-	Bytes    int64   `json:"bytes"`
+	ComputeS float64      `json:"compute_s"`
+	WaitS    float64      `json:"wait_s"`
+	Messages int64        `json:"messages"`
+	Bytes    int64        `json:"bytes"`
+	Events   int64        `json:"events"`
+	Totals   PacketTotals `json:"totals"`
 }
+
+// LiveStation is a link or router's load over the most recent stats interval.
+type LiveStation struct {
+	Util  float64 `json:"util"`
+	Queue int     `json:"queue"`
+}
+
+// LiveLoad is the network's load as of SimulatedTime, refreshed about twice a second.
+type LiveLoad struct {
+	SimulatedTime float64                `json:"simulated_time"`
+	Links         map[string]LiveStation `json:"links"`
+	Routers       map[string]LiveStation `json:"routers"`
+}
+
+// liveStatsEvery bounds how often workers are asked for load: it costs one map per step.
+const liveStatsEvery = 500 * time.Millisecond
 
 type Status struct {
 	Kind          string                     `json:"kind"`
@@ -49,8 +67,13 @@ type Status struct {
 	WindowsDone   int                        `json:"windows_done"`
 	WindowsTotal  int                        `json:"windows_total"`
 	Partitions    map[string]PartitionTiming `json:"partitions"`
-	FailedNode    string                     `json:"failed_node,omitempty"`
-	Error         string                     `json:"error,omitempty"`
+	// Participants[i] is the node simulating partition i of the plan.
+	Participants []string         `json:"participants"`
+	Totals       PacketTotals     `json:"totals"`
+	CutTraffic   map[string]int64 `json:"cut_traffic"`
+	Live         *LiveLoad        `json:"live,omitempty"`
+	FailedNode   string           `json:"failed_node,omitempty"`
+	Error        string           `json:"error,omitempty"`
 }
 
 type Report struct {
@@ -70,6 +93,9 @@ type Report struct {
 	PartitionWallS   float64                    `json:"partitioned_wall_seconds"`
 	BaselineWallS    float64                    `json:"baseline_wall_seconds,omitempty"`
 	Partitions       map[string]PartitionTiming `json:"partitions"`
+	Participants     []string                   `json:"participants"`
+	Totals           PacketTotals               `json:"totals"`
+	CutTraffic       map[string]int64           `json:"cut_traffic"`
 	FailedNode       string                     `json:"failed_node,omitempty"`
 	Error            string                     `json:"error,omitempty"`
 }
@@ -145,6 +171,12 @@ type Run struct {
 	partitionWall    float64
 	baselineWall     float64
 	partitions       map[string]PartitionTiming
+	participants     []string
+	cutTraffic       map[string]int64
+	live             *LiveLoad
+	// Busy time per station at the last stats sample, keyed "link/endpoint" or "router".
+	liveBusy map[string]float64
+	liveAt   float64
 	done             chan struct{}
 }
 
@@ -156,7 +188,9 @@ func (r *Run) Status() Status {
 	return Status{
 		Kind: r.Kind, BatchID: r.ID, Coordinator: r.Coordinator, State: r.state, Phase: r.phase,
 		SimulatedTime: r.simulatedTime, WindowsDone: r.windowsDone, WindowsTotal: r.Plan.Windows,
-		Partitions: cloneTimings(r.partitions), FailedNode: r.failedNode, Error: r.err,
+		Partitions: cloneTimings(r.partitions), Participants: append([]string(nil), r.participants...),
+		Totals: sumTotals(r.partitions), CutTraffic: cloneCounts(r.cutTraffic), Live: r.live,
+		FailedNode: r.failedNode, Error: r.err,
 	}
 }
 
@@ -169,8 +203,28 @@ func (r *Run) Report() Report {
 		BaselineMetrics: cloneRaw(r.baselineMetrics), ResultsIdentical: r.resultsIdentical,
 		FirstDifference: r.firstDifference, Speedup: r.speedup,
 		PartitionWallS: r.partitionWall, BaselineWallS: r.baselineWall,
-		Partitions: cloneTimings(r.partitions), FailedNode: r.failedNode, Error: r.err,
+		Partitions: cloneTimings(r.partitions), Participants: append([]string(nil), r.participants...),
+		Totals: sumTotals(r.partitions), CutTraffic: cloneCounts(r.cutTraffic),
+		FailedNode: r.failedNode, Error: r.err,
 	}
+}
+
+func sumTotals(parts map[string]PartitionTiming) PacketTotals {
+	var total PacketTotals
+	for _, timing := range parts {
+		total.Sent += timing.Totals.Sent
+		total.Delivered += timing.Totals.Delivered
+		total.Dropped += timing.Totals.Dropped
+	}
+	return total
+}
+
+func cloneCounts(src map[string]int64) map[string]int64 {
+	dst := make(map[string]int64, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func cloneTimings(src map[string]PartitionTiming) map[string]PartitionTiming {
@@ -257,8 +311,10 @@ func (m *Manager) Start(ctx context.Context, req RunRequest) (*Run, error) {
 		state: "running", phase: "planning", partitions: make(map[string]PartitionTiming),
 		done: make(chan struct{}),
 	}
+	run.cutTraffic = make(map[string]int64)
 	for _, participant := range participants {
 		run.partitions[participant.ID] = PartitionTiming{}
+		run.participants = append(run.participants, participant.ID)
 	}
 	m.mu.Lock()
 	if m.latest != nil && m.latest.Status().State == "running" {
@@ -347,12 +403,19 @@ func (m *Manager) execute(run *Run, participants []peers.Peer) {
 	}
 	inbound := make([][]ArrivalRecord, len(participants))
 	current := 0.0
+	duration := scenarioDuration(run.Scenario)
+	lastStats := time.Time{}
 	for window := 0; window < run.Plan.Windows; window++ {
-		until := math.Min(run.Plan.Lookahead*float64(window+1), scenarioDuration(run.Scenario))
+		until := math.Min(run.Plan.Lookahead*float64(window+1), duration)
 		if until <= current {
 			break
 		}
-		responses, elapsed, err := m.stepWorkers(ctx, run, participants, inbound, until)
+		// Live load is sampled at most every liveStatsEvery, and always on the last window.
+		stats := run.Kind == "pdes" && (time.Since(lastStats) >= liveStatsEvery || until >= duration)
+		if stats {
+			lastStats = time.Now()
+		}
+		responses, elapsed, err := m.stepWorkers(ctx, run, participants, inbound, until, stats)
 		if err != nil {
 			m.fail(run, participants, opened, err)
 			return
@@ -367,13 +430,21 @@ func (m *Manager) execute(run *Run, participants []peers.Peer) {
 				}
 				nextInbound[target] = append(nextInbound[target], record)
 				encoded, _ := json.Marshal(record)
+				size := int64(len(encoded))
 				run.mu.Lock()
-				timing := run.partitions[participants[source].ID]
-				timing.Messages++
-				timing.Bytes += int64(len(encoded))
-				run.partitions[participants[source].ID] = timing
+				// A crossing record is one message out of its source and one into its target.
+				for _, id := range []string{participants[source].ID, participants[target].ID} {
+					timing := run.partitions[id]
+					timing.Messages++
+					timing.Bytes += size
+					run.partitions[id] = timing
+				}
+				run.cutTraffic[record.Link]++
 				run.mu.Unlock()
 			}
+		}
+		if stats {
+			run.updateLive(responses, until)
 		}
 		for part := range nextInbound {
 			sort.Slice(nextInbound[part], func(i, j int) bool {
@@ -426,14 +497,14 @@ func (m *Manager) execute(run *Run, participants []peers.Peer) {
 	run.mu.Lock()
 	run.metrics = metrics
 	run.partitionWall = time.Since(started).Seconds()
-	run.phase = "complete"
-	run.state = "complete"
+	// With a baseline still to run, stay "running": a poll in between must not see a finished run.
+	if run.Baseline {
+		run.phase = "baseline"
+	} else {
+		run.phase, run.state = "complete", "complete"
+	}
 	run.mu.Unlock()
 	if run.Baseline {
-		run.mu.Lock()
-		run.phase = "baseline"
-		run.state = "running"
-		run.mu.Unlock()
 		m.runBaseline(ctx, run, metrics)
 	}
 }
@@ -471,7 +542,7 @@ func (m *Manager) openWorkers(ctx context.Context, run *Run, participants []peer
 }
 
 func (m *Manager) stepWorkers(ctx context.Context, run *Run, participants []peers.Peer, inbound [][]ArrivalRecord,
-	until float64) ([]StepResponse, []time.Duration, error) {
+	until float64, stats bool) ([]StepResponse, []time.Duration, error) {
 	responses := make([]StepResponse, len(participants))
 	elapsed := make([]time.Duration, len(participants))
 	errs := make(chan error, len(participants))
@@ -484,7 +555,7 @@ func (m *Manager) stepWorkers(ctx context.Context, run *Run, participants []peer
 			defer cancel()
 			start := time.Now()
 			records := append([]ArrivalRecord{}, inbound[i]...)
-			reply, err := m.step(stepCtx, peer, run.ID, StepRequest{Until: until, Inbound: records})
+			reply, err := m.step(stepCtx, peer, run.ID, StepRequest{Until: until, Inbound: records, Stats: stats})
 			elapsed[i] = time.Since(start)
 			if err != nil {
 				errs <- &nodeFailure{node: peer.ID, err: fmt.Errorf("step at %.6f: %w", until, err)}
@@ -494,11 +565,8 @@ func (m *Manager) stepWorkers(ctx context.Context, run *Run, participants []peer
 			run.mu.Lock()
 			timing := run.partitions[peer.ID]
 			timing.ComputeS += reply.ComputeS
-			timing.Messages += int64(len(inbound[i]))
-			for _, record := range inbound[i] {
-				encoded, _ := json.Marshal(record)
-				timing.Bytes += int64(len(encoded))
-			}
+			timing.Events += int64(reply.Events)
+			timing.Totals = reply.Totals
 			run.partitions[peer.ID] = timing
 			run.mu.Unlock()
 		}(index, participant)
@@ -716,4 +784,38 @@ func (m *Manager) delete(peer peers.Peer, run string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), m.stepTimeout)
 	defer cancel()
 	return m.remote.Delete(ctx, peer.URL, run)
+}
+
+// updateLive turns the workers' cumulative busy times into each station's
+// utilization since the previous sample. A link's load is its busier direction.
+func (r *Run) updateLive(responses []StepResponse, now float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.liveBusy == nil {
+		r.liveBusy = make(map[string]float64)
+	}
+	interval := now - r.liveAt
+	utilization := func(key string, busy float64) float64 {
+		previous := r.liveBusy[key]
+		r.liveBusy[key] = busy
+		if interval <= 0 {
+			return 0
+		}
+		return math.Max(0, math.Min(1, (busy-previous)/interval))
+	}
+	live := &LiveLoad{SimulatedTime: now, Links: map[string]LiveStation{}, Routers: map[string]LiveStation{}}
+	for _, response := range responses {
+		for link, ends := range response.Links {
+			for endpoint, load := range ends {
+				station := live.Links[link]
+				station.Util = math.Max(station.Util, utilization(link+"/"+endpoint, load.Busy))
+				station.Queue += load.Queue
+				live.Links[link] = station
+			}
+		}
+		for router, load := range response.Routers {
+			live.Routers[router] = LiveStation{Util: utilization(router, load.Busy), Queue: load.Queue}
+		}
+	}
+	r.live, r.liveAt = live, now
 }

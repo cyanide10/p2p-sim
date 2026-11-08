@@ -110,7 +110,7 @@ export function ReportPage({ runId, scenario }: { runId: string; scenario: MockS
     return <NetworkReportView report={report} runId={runId} api={api} />;
   }
   if ("kind" in report && report.kind === "pdes") {
-    return <PDESReportView report={report} runId={runId} />;
+    return <PDESReportView report={report} runId={runId} api={api} />;
   }
   if ("kind" in report && report.kind === "attack") {
     return <AttackReportView report={report} runId={runId} />;
